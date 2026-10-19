@@ -147,10 +147,12 @@ impl Context {
             Command::Run {
                 only,
                 files,
+                allow_process_hooks,
                 command,
             } => {
-                let (prepared, deliveries) =
-                    self.audited("run", &[], || self.prepare_run(&only, &files, command))?;
+                let (prepared, deliveries) = self.audited("run", &[], || {
+                    self.prepare_run(&only, &files, allow_process_hooks, command)
+                })?;
                 launch(prepared, &deliveries)
             }
             Command::Diff { left, right } => {
@@ -396,6 +398,7 @@ impl Context {
         &self,
         only: &[Pattern],
         files: &[FileDelivery],
+        allow_process_hooks: bool,
         argv: Vec<OsString>,
     ) -> Result<(process::Command, Vec<DeliveredFile>)> {
         let mut arguments = argv.into_iter();
@@ -409,11 +412,24 @@ impl Context {
             command.env_remove(variable);
         }
         let delivered_keys: Vec<&SecretKey> = files.iter().map(|file| &file.key).collect();
+        let mut withheld = Vec::new();
         for (key, value) in vault.secrets().iter() {
             let selected = only.is_empty() || only.iter().any(|pattern| pattern.matches(key));
-            if selected && !delivered_keys.contains(&key) {
+            if !selected || delivered_keys.contains(&key) {
+                continue;
+            }
+            if key.is_process_hook() && !allow_process_hooks {
+                withheld.push(key.as_str());
+            } else {
                 command.env(key.as_str(), value);
             }
+        }
+        if !withheld.is_empty() {
+            notice(format!(
+                "not injecting {}: they change how programs load code; \
+                 pass --allow-process-hooks to inject them",
+                withheld.join(", ")
+            ));
         }
         let mut deliveries = Vec::with_capacity(files.len());
         for file in files {

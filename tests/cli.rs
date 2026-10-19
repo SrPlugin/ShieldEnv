@@ -1206,3 +1206,33 @@ fn trust_accept_on_a_password_vault_is_a_no_op() {
         .success()
         .stderr(contains("no members"));
 }
+
+#[cfg(unix)]
+#[test]
+fn run_withholds_variables_that_change_how_code_is_loaded() {
+    let sandbox = Sandbox::with_secrets(&[
+        ("API_KEY", "abc"),
+        ("LD_PRELOAD", "/tmp/evil.so"),
+        ("NODE_OPTIONS", "--require evil"),
+    ]);
+    sandbox
+        .run(&["run", "--", "env"])
+        .success()
+        .stdout(
+            contains("API_KEY=abc")
+                .and(contains("LD_PRELOAD").not())
+                .and(contains("NODE_OPTIONS").not()),
+        )
+        .stderr(contains("not injecting LD_PRELOAD, NODE_OPTIONS"));
+    sandbox
+        .run(&[
+            "run",
+            "--allow-process-hooks",
+            "--",
+            "sh",
+            "-c",
+            "echo $NODE_OPTIONS",
+        ])
+        .success()
+        .stdout(contains("--require evil"));
+}

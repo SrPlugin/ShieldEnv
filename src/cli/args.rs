@@ -128,6 +128,11 @@ pub enum Command {
         )]
         files: Vec<FileDelivery>,
         #[arg(
+            long,
+            help = "Also inject variables such as PATH or LD_PRELOAD that change how programs load code"
+        )]
+        allow_process_hooks: bool,
+        #[arg(
             required = true,
             trailing_var_arg = true,
             allow_hyphen_values = true,
