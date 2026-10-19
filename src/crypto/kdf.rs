@@ -24,9 +24,9 @@ impl KdfParams {
         parallelism: 4,
     };
 
-    const MEMORY_KIB: RangeInclusive<u32> = 19 * 1024..=1024 * 1024;
-    const ITERATIONS: RangeInclusive<u32> = 2..=16;
-    const PARALLELISM: RangeInclusive<u32> = 1..=16;
+    const MEMORY_KIB: RangeInclusive<u32> = 19 * 1024..=256 * 1024;
+    const ITERATIONS: RangeInclusive<u32> = 2..=8;
+    const PARALLELISM: RangeInclusive<u32> = 1..=8;
 
     pub fn validate(self) -> Result<Self> {
         if Self::MEMORY_KIB.contains(&self.memory_kib)
@@ -101,7 +101,7 @@ mod tests {
                 ..FAST
             },
             KdfParams {
-                memory_kib: 1024 * 1024 + 1,
+                memory_kib: 256 * 1024 + 1,
                 ..FAST
             },
             KdfParams {
@@ -109,7 +109,7 @@ mod tests {
                 ..FAST
             },
             KdfParams {
-                iterations: 17,
+                iterations: 9,
                 ..FAST
             },
             KdfParams {
@@ -117,7 +117,7 @@ mod tests {
                 ..FAST
             },
             KdfParams {
-                parallelism: 17,
+                parallelism: 9,
                 ..FAST
             },
         ];
