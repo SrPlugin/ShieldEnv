@@ -5,9 +5,9 @@ use zeroize::Zeroizing;
 
 use crate::crypto::{Envelope, KdfParams, Key, MAX_VAULT_LEN};
 use crate::domain::{Environment, Secrets};
-use crate::storage::Workspace;
 use crate::storage::codec;
 use crate::storage::file::{FileLock, LockMode, WriteMode, read_bounded, write_atomic};
+use crate::storage::{History, Workspace};
 use crate::{Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +32,7 @@ pub struct Vault {
     access: Access,
     envelope: Envelope,
     secrets: Secrets,
+    history: History,
     _lock: FileLock,
 }
 
@@ -84,7 +85,25 @@ impl Vault {
         if self.access != Access::Write {
             return Err(Error::ReadOnly);
         }
-        write_atomic(&self.path, &self.encrypt()?, WriteMode::Replace)
+        let sealed = self.encrypt()?;
+        self.history.record(&self.path)?;
+        write_atomic(&self.path, &sealed, WriteMode::Replace)
+    }
+
+    pub fn restore(&mut self, snapshot: usize) -> Result<()> {
+        if self.access != Access::Write {
+            return Err(Error::ReadOnly);
+        }
+        let blob = self.history.read(snapshot)?;
+        let (_, plaintext) = Envelope::open_with_key(&blob, self.envelope.data_key().clone())
+            .map_err(|error| match error {
+                Error::Authentication => {
+                    Error::InvalidValue("snapshot was made under a previous data key")
+                }
+                other => other,
+            })?;
+        self.secrets = codec::decode(&plaintext)?;
+        self.save()
     }
 
     pub fn change_password(&mut self, password: &SecretString) -> Result<()> {
@@ -119,7 +138,8 @@ impl Vault {
             return Err(Error::ReadOnly);
         }
         self.envelope.rekey(password)?;
-        self.save()
+        self.save()?;
+        self.history.clear()
     }
 
     #[must_use]
@@ -155,6 +175,7 @@ impl Vault {
             access,
             envelope,
             secrets,
+            history: History::new(workspace.history_path(environment)),
             _lock: lock,
         })
     }
@@ -171,6 +192,7 @@ impl Vault {
             access: Access::Write,
             envelope,
             secrets: Secrets::new(),
+            history: History::new(workspace.history_path(environment)),
             _lock: lock,
         };
         write_atomic(&vault.path, &vault.encrypt()?, WriteMode::CreateNew)?;
@@ -318,6 +340,58 @@ mod tests {
         assert_eq!(reopened.secrets().get("A"), Some("1"));
         drop(reopened);
         assert!(Vault::open(&fixture.workspace, &fixture.environment, &new, Access::Read).is_ok());
+    }
+
+    #[test]
+    fn restore_returns_to_an_earlier_state_and_is_undoable() {
+        let fixture = fixture();
+        let secret = password("correct horse battery");
+        let mut vault = Vault::create(&fixture.workspace, &fixture.environment, &secret).unwrap();
+        insert(&mut vault, "A", "1");
+        vault.save().unwrap();
+        insert(&mut vault, "B", "2");
+        vault.save().unwrap();
+        vault.secrets_mut().remove("A");
+        vault.save().unwrap();
+        vault.restore(1).unwrap();
+        assert_eq!(vault.secrets().get("A"), Some("1"));
+        assert_eq!(vault.secrets().get("B"), Some("2"));
+        vault.restore(4).unwrap();
+        assert!(vault.secrets().is_empty());
+        assert!(vault.restore(99).is_err());
+    }
+
+    #[test]
+    fn restore_survives_password_changes_but_not_rekey() {
+        let fixture = fixture();
+        let secret = password("correct horse battery");
+        let mut vault = Vault::create(&fixture.workspace, &fixture.environment, &secret).unwrap();
+        insert(&mut vault, "A", "1");
+        vault.save().unwrap();
+        insert(&mut vault, "B", "2");
+        vault.save().unwrap();
+        vault
+            .change_password(&password("another password!"))
+            .unwrap();
+        vault.restore(1).unwrap();
+        assert_eq!(vault.secrets().get("B"), Some("2"));
+        vault.rekey(&password("another password!")).unwrap();
+        assert!(vault.restore(1).is_err());
+    }
+
+    #[test]
+    fn read_access_cannot_restore() {
+        let fixture = fixture();
+        let secret = password("correct horse battery");
+        drop(Vault::create(&fixture.workspace, &fixture.environment, &secret).unwrap());
+        let mut vault = Vault::open(
+            &fixture.workspace,
+            &fixture.environment,
+            &secret,
+            Access::Read,
+        )
+        .unwrap();
+        assert!(matches!(vault.restore(1), Err(Error::ReadOnly)));
     }
 
     #[test]

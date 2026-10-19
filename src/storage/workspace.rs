@@ -11,7 +11,8 @@ const GLOBAL_DIR_NAME: &str = "shieldenv";
 const VAULT_EXTENSION: &str = "vault";
 const LOCK_EXTENSION: &str = "lock";
 const AUDIT_FILE: &str = "audit.log";
-const GITIGNORE: &[u8] = b"*.lock\naudit.log\n";
+const HISTORY_DIR: &str = "history";
+const GITIGNORE: &[u8] = b"*.lock\naudit.log\nhistory/\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
@@ -95,6 +96,11 @@ impl Workspace {
     pub fn lock_path(&self, environment: &Environment) -> PathBuf {
         self.directory
             .join(format!("{environment}.{LOCK_EXTENSION}"))
+    }
+
+    #[must_use]
+    pub fn history_path(&self, environment: &Environment) -> PathBuf {
+        self.directory.join(HISTORY_DIR).join(environment.as_str())
     }
 
     #[must_use]
@@ -209,6 +215,10 @@ mod tests {
         assert_eq!(
             workspace.audit_path(),
             workspace.directory().join("audit.log")
+        );
+        assert_eq!(
+            workspace.history_path(&production),
+            workspace.directory().join("history").join("production")
         );
     }
 

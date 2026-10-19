@@ -145,6 +145,15 @@ pub enum Command {
     #[command(about = "Replace the vault data key and re-encrypt every secret")]
     Rekey,
 
+    #[command(about = "List saved earlier states of the vault")]
+    History,
+
+    #[command(about = "Return the vault to an earlier saved state")]
+    Restore {
+        #[arg(default_value_t = 1, help = "Snapshot number from 'history'")]
+        snapshot: usize,
+    },
+
     #[command(about = "Show vault information")]
     Status,
 

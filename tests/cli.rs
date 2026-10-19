@@ -102,7 +102,7 @@ fn init_creates_private_directory() {
     let directory = sandbox.project().join(".shieldenv");
     assert_eq!(
         fs::read_to_string(directory.join(".gitignore")).unwrap(),
-        "*.lock\naudit.log\n"
+        "*.lock\naudit.log\nhistory/\n"
     );
     #[cfg(unix)]
     assert_eq!(mode(&directory), 0o700);
@@ -556,4 +556,36 @@ fn rekey_keeps_secrets_but_invalidates_old_shares() {
         .assert()
         .code(1)
         .stderr(contains("do not unlock this vault"));
+}
+
+#[test]
+fn history_and_restore_undo_mistakes() {
+    let sandbox = Sandbox::with_secrets(&[("KEEP", "important")]);
+    sandbox.run(&["rm", "KEEP"]).success();
+    assert_eq!(sandbox.stdout(&["ls"]), "");
+    let history = sandbox.stdout(&["history"]);
+    assert!(history.lines().count() >= 2);
+    assert!(history.lines().next().unwrap().starts_with("1\t20"));
+    sandbox
+        .run(&["restore"])
+        .success()
+        .stderr(contains("restored 'dev'"));
+    assert_eq!(sandbox.stdout(&["get", "KEEP"]), "important\n");
+    sandbox
+        .run(&["restore", "99"])
+        .code(1)
+        .stderr(contains("no such snapshot"));
+    #[cfg(unix)]
+    assert_eq!(
+        mode(&sandbox.project().join(".shieldenv/history/dev")),
+        0o700
+    );
+}
+
+#[test]
+fn rekey_discards_history() {
+    let sandbox = Sandbox::with_secrets(&[("KEY", "value")]);
+    assert!(!sandbox.stdout(&["history"]).is_empty());
+    sandbox.run(&["rekey"]).success();
+    assert_eq!(sandbox.stdout(&["history"]), "");
 }

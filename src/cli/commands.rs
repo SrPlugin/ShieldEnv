@@ -11,7 +11,7 @@ use shieldenv::app::{Access, Charset, Format, Vault, parse_dotenv, random_secret
 use shieldenv::crypto::{KEY_LEN, Key, shamir};
 use shieldenv::domain::{Environment, Pattern, SecretKey, unix_now};
 use shieldenv::storage::file::{WriteMode, create_private_dir, read_bounded, write_atomic};
-use shieldenv::storage::{AuditLog, Scope, Workspace};
+use shieldenv::storage::{AuditLog, History, Scope, Workspace};
 use shieldenv::{Error, Result};
 use zeroize::Zeroizing;
 
@@ -147,6 +147,10 @@ impl Context {
             Command::Cp { from, to, force } => self.copy(&from, &to, force),
             Command::Passwd => self.audited("passwd", &[], || self.change_password()),
             Command::Rekey => self.audited("rekey", &[], || self.rekey()),
+            Command::History => self.audited("history", &[], || self.history()),
+            Command::Restore { snapshot } => {
+                self.audited("restore", &[], || self.restore(snapshot))
+            }
             Command::Status => self.audited("status", &[], || self.status()),
             Command::Verify => self.audited("verify", &[], || self.verify()),
             Command::Env => self.environments(),
@@ -414,6 +418,37 @@ impl Context {
         notice(format!(
             "rotated the data key of '{}'; earlier recovery shares no longer work, \
              and secrets seen by former members should be changed",
+            self.environment
+        ));
+        Ok(ExitCode::SUCCESS)
+    }
+
+    fn history(&self) -> Result<ExitCode> {
+        let history = History::new(self.workspace.history_path(&self.environment));
+        let snapshots = history.list()?;
+        if snapshots.is_empty() {
+            notice(format!("no saved states for '{}' yet", self.environment));
+        }
+        let mut output = String::new();
+        for (index, snapshot) in snapshots.iter().enumerate() {
+            let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(snapshot.taken);
+            let _ = writeln!(
+                output,
+                "{}\t{}\t{} bytes",
+                index + 1,
+                humantime::format_rfc3339_seconds(time),
+                snapshot.size
+            );
+        }
+        write_stdout(output.as_bytes())?;
+        Ok(ExitCode::SUCCESS)
+    }
+
+    fn restore(&self, snapshot: usize) -> Result<ExitCode> {
+        let mut vault = self.open(&self.environment, Access::Write)?;
+        vault.restore(snapshot)?;
+        notice(format!(
+            "restored '{}' to saved state {snapshot}; the previous state is now state 1",
             self.environment
         ));
         Ok(ExitCode::SUCCESS)
