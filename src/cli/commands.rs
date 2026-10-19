@@ -12,11 +12,12 @@ use shieldenv::app::{
 use shieldenv::crypto::{KEY_LEN, Key, shamir};
 use shieldenv::domain::{Environment, Pattern, SecretKey, unix_now};
 use shieldenv::storage::file::{WriteMode, create_private_dir, read_bounded, write_atomic};
+use shieldenv::storage::secretfile::{DeliveredFile, deliver};
 use shieldenv::storage::{AuditLog, History, Scope, Workspace};
 use shieldenv::{Error, Result};
 use zeroize::Zeroizing;
 
-use super::args::{Cli, Command, ExportFormat, MemberCommand, SharesCommand};
+use super::args::{Cli, Command, ExportFormat, FileDelivery, MemberCommand, SharesCommand};
 use super::context::Context;
 use super::identity::manage_identity;
 use super::output::{format_date, notice, plural, write_stdout};
@@ -138,9 +139,14 @@ impl Context {
                     namespace.as_deref(),
                 )
             }),
-            Command::Run { only, command } => {
-                let prepared = self.audited("run", &[], || self.prepare_run(&only, command))?;
-                launch(prepared)
+            Command::Run {
+                only,
+                files,
+                command,
+            } => {
+                let (prepared, deliveries) =
+                    self.audited("run", &[], || self.prepare_run(&only, &files, command))?;
+                launch(prepared, &deliveries)
             }
             Command::Diff { left, right } => {
                 let result = self.diff(&left, &right);
@@ -364,7 +370,12 @@ impl Context {
         Ok(ExitCode::SUCCESS)
     }
 
-    fn prepare_run(&self, only: &[Pattern], argv: Vec<OsString>) -> Result<process::Command> {
+    fn prepare_run(
+        &self,
+        only: &[Pattern],
+        files: &[FileDelivery],
+        argv: Vec<OsString>,
+    ) -> Result<(process::Command, Vec<DeliveredFile>)> {
         let mut arguments = argv.into_iter();
         let program = arguments
             .next()
@@ -375,12 +386,24 @@ impl Context {
             .args(arguments)
             .env_remove(PASSWORD_VARIABLE)
             .env_remove(NEW_PASSWORD_VARIABLE);
+        let delivered_keys: Vec<&SecretKey> = files.iter().map(|file| &file.key).collect();
         for (key, value) in vault.secrets().iter() {
-            if only.is_empty() || only.iter().any(|pattern| pattern.matches(key)) {
+            let selected = only.is_empty() || only.iter().any(|pattern| pattern.matches(key));
+            if selected && !delivered_keys.contains(&key) {
                 command.env(key.as_str(), value);
             }
         }
-        Ok(command)
+        let mut deliveries = Vec::with_capacity(files.len());
+        for file in files {
+            let value = vault
+                .secrets()
+                .get(file.key.as_str())
+                .ok_or_else(|| Error::KeyNotFound(file.key.to_string()))?;
+            let delivered = deliver(file.variable.as_str(), value)?;
+            command.env(file.variable.as_str(), delivered.path());
+            deliveries.push(delivered);
+        }
+        Ok((command, deliveries))
     }
 
     fn diff(&self, left: &Environment, right: &Environment) -> Result<ExitCode> {
@@ -651,23 +674,45 @@ impl Context {
 }
 
 #[cfg(unix)]
-fn launch(mut command: process::Command) -> Result<ExitCode> {
+fn launch(mut command: process::Command, deliveries: &[DeliveredFile]) -> Result<ExitCode> {
     use std::os::unix::process::CommandExt;
-    let program = command.get_program().to_string_lossy().into_owned();
-    let source = command.exec();
-    Err(Error::Spawn { program, source })
+    if deliveries.iter().all(DeliveredFile::survives_exec) {
+        let program = command.get_program().to_string_lossy().into_owned();
+        let source = command.exec();
+        return Err(Error::Spawn { program, source });
+    }
+    run_to_completion(&mut command)
 }
 
 #[cfg(not(unix))]
-fn launch(mut command: process::Command) -> Result<ExitCode> {
+fn launch(mut command: process::Command, _deliveries: &[DeliveredFile]) -> Result<ExitCode> {
+    run_to_completion(&mut command)
+}
+
+fn run_to_completion(command: &mut process::Command) -> Result<ExitCode> {
     let program = command.get_program().to_string_lossy().into_owned();
     let status = command
         .status()
         .map_err(|source| Error::Spawn { program, source })?;
-    Ok(status
+    Ok(exit_code(status))
+}
+
+#[cfg(unix)]
+fn exit_code(status: process::ExitStatus) -> ExitCode {
+    use std::os::unix::process::ExitStatusExt;
+    status
+        .code()
+        .or_else(|| status.signal().map(|signal| 128 + signal))
+        .and_then(|code| u8::try_from(code).ok())
+        .map_or(ExitCode::FAILURE, ExitCode::from)
+}
+
+#[cfg(not(unix))]
+fn exit_code(status: process::ExitStatus) -> ExitCode {
+    status
         .code()
         .and_then(|code| u8::try_from(code).ok())
-        .map_or(ExitCode::FAILURE, ExitCode::from))
+        .map_or(ExitCode::FAILURE, ExitCode::from)
 }
 
 fn share_file_name(index: u8) -> String {

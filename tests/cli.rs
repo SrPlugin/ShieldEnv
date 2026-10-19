@@ -953,3 +953,45 @@ fn export_targets_docker_and_kubernetes() {
         .code(1)
         .stderr(contains("line breaks"));
 }
+
+#[cfg(unix)]
+#[test]
+fn run_file_delivers_secrets_as_files_not_variables() {
+    let sandbox = Sandbox::with_secrets(&[
+        ("TLS_CERT", "-----BEGIN-----\nbody\n-----END-----"),
+        ("API_KEY", "key-value"),
+    ]);
+    sandbox
+        .run(&[
+            "run",
+            "--file",
+            "CERT_PATH=TLS_CERT",
+            "--",
+            "sh",
+            "-c",
+            "cat \"$CERT_PATH\"; echo; echo \"cert=${TLS_CERT:-unset} key=$API_KEY\"",
+        ])
+        .success()
+        .stdout(
+            contains("-----BEGIN-----\nbody\n-----END-----")
+                .and(contains("cert=unset key=key-value")),
+        );
+    sandbox
+        .run(&["run", "--file", "PATH_VAR=MISSING", "--", "true"])
+        .code(1)
+        .stderr(contains("key 'MISSING' not found"));
+    sandbox
+        .run(&["run", "--file", "NOEQUALS", "--", "true"])
+        .code(2);
+    sandbox
+        .run(&[
+            "run",
+            "--file",
+            "CERT_PATH=TLS_CERT",
+            "--",
+            "sh",
+            "-c",
+            "exit 9",
+        ])
+        .code(9);
+}

@@ -46,6 +46,7 @@ pub enum Command {
     #[command(about = "Store a secret; without VALUE it is read from a prompt or stdin")]
     Set {
         key: SecretKey,
+        #[arg(allow_hyphen_values = true)]
         value: Option<String>,
     },
 
@@ -119,6 +120,13 @@ pub enum Command {
             help = "Inject only keys matching the pattern"
         )]
         only: Vec<Pattern>,
+        #[arg(
+            long = "file",
+            value_name = "VAR=KEY",
+            value_parser = parse_file_delivery,
+            help = "Deliver a secret as a file whose path is stored in VAR"
+        )]
+        files: Vec<FileDelivery>,
         #[arg(
             required = true,
             trailing_var_arg = true,
@@ -267,6 +275,22 @@ pub enum SharesCommand {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileDelivery {
+    pub variable: SecretKey,
+    pub key: SecretKey,
+}
+
+fn parse_file_delivery(text: &str) -> shieldenv::Result<FileDelivery> {
+    let (variable, key) = text
+        .split_once('=')
+        .ok_or(shieldenv::Error::InvalidValue("expected VAR=KEY"))?;
+    Ok(FileDelivery {
+        variable: variable.parse()?,
+        key: key.parse()?,
+    })
+}
+
 fn parse_public_identity(text: &str) -> shieldenv::Result<Box<PublicIdentity>> {
     text.parse().map(Box::new)
 }
@@ -331,11 +355,44 @@ mod tests {
             "app.js",
         ])
         .unwrap();
-        let Command::Run { only, command } = cli.command else {
+        let Command::Run { only, command, .. } = cli.command else {
             panic!("expected run");
         };
         assert_eq!(only.len(), 1);
         assert_eq!(command, ["node", "--inspect", "app.js"]);
+    }
+
+    #[test]
+    fn set_accepts_values_that_start_with_a_hyphen() {
+        let cli = Cli::try_parse_from(["shieldenv", "set", "CERT", "-----BEGIN-----"]).unwrap();
+        let Command::Set { value, .. } = cli.command else {
+            panic!("expected set");
+        };
+        assert_eq!(value.as_deref(), Some("-----BEGIN-----"));
+    }
+
+    #[test]
+    fn file_deliveries_parse_variable_and_key() {
+        let cli = Cli::try_parse_from([
+            "shieldenv",
+            "run",
+            "--file",
+            "CERT_PATH=TLS_CERT",
+            "--",
+            "app",
+        ])
+        .unwrap();
+        let Command::Run { files, .. } = cli.command else {
+            panic!("expected run");
+        };
+        assert_eq!(files[0].variable.as_str(), "CERT_PATH");
+        assert_eq!(files[0].key.as_str(), "TLS_CERT");
+        for bad in ["NOEQUALS", "=KEY", "VAR=", "1BAD=KEY", "VAR=BAD-KEY"] {
+            assert!(
+                Cli::try_parse_from(["shieldenv", "run", "--file", bad, "--", "app"]).is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
