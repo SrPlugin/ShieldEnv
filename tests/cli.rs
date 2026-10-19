@@ -1118,3 +1118,91 @@ fn git_setup_requires_a_repository() {
         .code(1)
         .stderr(contains("not a git repository"));
 }
+
+#[test]
+fn rolled_back_vaults_are_refused_until_accepted() {
+    let team = team();
+    let path = team.sandbox.vault("dev");
+    let old_version = fs::read(&path).unwrap();
+    team.sandbox
+        .as_member(&team.alice)
+        .arg("rekey")
+        .assert()
+        .success();
+    team.sandbox
+        .as_member(&team.alice)
+        .args(["get", "API_KEY"])
+        .assert()
+        .success();
+    fs::write(&path, old_version).unwrap();
+    team.sandbox
+        .as_member(&team.alice)
+        .args(["get", "API_KEY"])
+        .assert()
+        .code(1)
+        .stderr(contains("rollback").and(contains("trust accept")))
+        .stdout("");
+    team.sandbox
+        .as_member(&team.alice)
+        .args(["trust", "accept"])
+        .assert()
+        .success();
+    team.sandbox
+        .as_member(&team.alice)
+        .args(["get", "API_KEY"])
+        .assert()
+        .success()
+        .stdout("abc\n");
+}
+
+#[test]
+fn unseen_administrator_changes_need_approval() {
+    let team = team();
+    let machine = |sandbox: &Sandbox, key: &Path, name: &str| {
+        let mut command = sandbox.as_member(key);
+        command.env("XDG_DATA_HOME", sandbox.home().join(format!("data-{name}")));
+        command
+    };
+    machine(&team.sandbox, &team.bob, "bob")
+        .args(["get", "API_KEY"])
+        .assert()
+        .success()
+        .stderr(contains("trusting these administrators"));
+    let (carol, carol_public) = team.sandbox.identity("carol");
+    team.sandbox
+        .as_member(&team.alice)
+        .args(["member", "add", "carol", &carol_public, "--admin"])
+        .assert()
+        .success();
+    machine(&team.sandbox, &carol, "carol")
+        .args(["member", "rm", "alice"])
+        .assert()
+        .success();
+    machine(&team.sandbox, &team.bob, "bob")
+        .args(["get", "API_KEY"])
+        .assert()
+        .code(1)
+        .stderr(
+            contains("signed by carol").and(contains("who is not an administrator you trusted")),
+        )
+        .stdout("");
+    machine(&team.sandbox, &team.bob, "bob")
+        .args(["trust", "accept"])
+        .assert()
+        .success()
+        .stderr(contains("carol"));
+    machine(&team.sandbox, &team.bob, "bob")
+        .args(["get", "API_KEY"])
+        .assert()
+        .success()
+        .stdout("abc\n");
+}
+
+#[test]
+fn trust_accept_on_a_password_vault_is_a_no_op() {
+    let sandbox = Sandbox::with_secrets(&[("KEY", "value")]);
+    sandbox
+        .run(&["trust", "accept"])
+        .success()
+        .stderr(contains("no members"));
+}

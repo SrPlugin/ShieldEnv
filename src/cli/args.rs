@@ -200,6 +200,12 @@ pub enum Command {
         action: MemberCommand,
     },
 
+    #[command(about = "Approve the administrators of a vault after reviewing them")]
+    Trust {
+        #[command(subcommand)]
+        action: TrustCommand,
+    },
+
     #[command(about = "Make git merge vault files key by key")]
     GitSetup,
 
@@ -221,6 +227,12 @@ pub enum Command {
 
     #[command(about = "Print a shell completion script")]
     Completions { shell: Shell },
+}
+
+#[derive(Debug, Clone, Copy, Subcommand)]
+pub enum TrustCommand {
+    #[command(about = "Trust the current administrators and generation of this vault")]
+    Accept,
 }
 
 #[derive(Debug, Subcommand)]

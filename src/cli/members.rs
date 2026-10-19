@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 use std::process::ExitCode;
 
 use shieldenv::Result;
-use shieldenv::app::{Access, Vault};
+use shieldenv::app::Access;
 use shieldenv::crypto::PublicIdentity;
 use shieldenv::domain::MemberName;
 
@@ -58,7 +58,7 @@ impl Context {
     }
 
     pub(super) fn member_list(&self) -> Result<ExitCode> {
-        let inspection = Vault::inspect(&self.workspace, &self.environment)?;
+        let inspection = self.trusted_inspection(&self.environment)?;
         if inspection.members.is_empty() {
             notice(format!(
                 "'{}' has no members; it is protected by its password only",
@@ -80,6 +80,18 @@ impl Context {
             notice(format!(
                 "password access is also enabled ({})",
                 plural(inspection.members.len(), "member")
+            ));
+        }
+        Ok(ExitCode::SUCCESS)
+    }
+}
+
+impl Context {
+    pub(super) fn trust_accept(&self) -> Result<ExitCode> {
+        if !self.accept_trust()? {
+            notice(format!(
+                "'{}' has no members, so there is nothing to trust",
+                self.environment
             ));
         }
         Ok(ExitCode::SUCCESS)

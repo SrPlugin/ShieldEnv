@@ -17,7 +17,9 @@ use shieldenv::storage::{AuditLog, History, Scope, Workspace};
 use shieldenv::{Error, Result};
 use zeroize::Zeroizing;
 
-use super::args::{Cli, Command, ExportFormat, FileDelivery, MemberCommand, SharesCommand};
+use super::args::{
+    Cli, Command, ExportFormat, FileDelivery, MemberCommand, SharesCommand, TrustCommand,
+};
 use super::context::Context;
 use super::git;
 use super::identity::manage_identity;
@@ -166,34 +168,9 @@ impl Context {
             Command::Status => self.audited("status", &[], || self.status()),
             Command::Verify => self.audited("verify", &[], || self.verify()),
             Command::Env => self.environments(),
-            Command::Shares { action } => match action {
-                SharesCommand::Split {
-                    shares,
-                    threshold,
-                    output,
-                } => self.audited("shares-split", &[], || {
-                    self.split_shares(shares, threshold, &output)
-                }),
-                SharesCommand::Recover { files } => {
-                    self.audited("shares-recover", &[], || self.recover(&files))
-                }
-            },
-            Command::Member { action } => match action {
-                MemberCommand::Init { name } => {
-                    self.audited("member-init", &[name.as_str()], || self.member_init(&name))
-                }
-                MemberCommand::Add {
-                    name,
-                    public,
-                    admin,
-                } => self.audited("member-add", &[name.as_str()], || {
-                    self.member_add(&name, *public, admin)
-                }),
-                MemberCommand::Rm { name } => {
-                    self.audited("member-rm", &[name.as_str()], || self.member_remove(&name))
-                }
-                MemberCommand::Ls => self.member_list(),
-            },
+            Command::Shares { action } => self.shares(action),
+            Command::Member { action } => self.members(action),
+            Command::Trust { action } => self.trust(action),
             Command::Log { count } => self.log(count),
             Command::Init
             | Command::Completions { .. }
@@ -201,6 +178,46 @@ impl Context {
             | Command::GitSetup
             | Command::Merge { .. }
             | Command::Id { .. } => Ok(ExitCode::SUCCESS),
+        }
+    }
+
+    fn shares(&self, action: SharesCommand) -> Result<ExitCode> {
+        match action {
+            SharesCommand::Split {
+                shares,
+                threshold,
+                output,
+            } => self.audited("shares-split", &[], || {
+                self.split_shares(shares, threshold, &output)
+            }),
+            SharesCommand::Recover { files } => {
+                self.audited("shares-recover", &[], || self.recover(&files))
+            }
+        }
+    }
+
+    fn members(&self, action: MemberCommand) -> Result<ExitCode> {
+        match action {
+            MemberCommand::Init { name } => {
+                self.audited("member-init", &[name.as_str()], || self.member_init(&name))
+            }
+            MemberCommand::Add {
+                name,
+                public,
+                admin,
+            } => self.audited("member-add", &[name.as_str()], || {
+                self.member_add(&name, *public, admin)
+            }),
+            MemberCommand::Rm { name } => {
+                self.audited("member-rm", &[name.as_str()], || self.member_remove(&name))
+            }
+            MemberCommand::Ls => self.member_list(),
+        }
+    }
+
+    fn trust(&self, action: TrustCommand) -> Result<ExitCode> {
+        match action {
+            TrustCommand::Accept => self.audited("trust-accept", &[], || self.trust_accept()),
         }
     }
 

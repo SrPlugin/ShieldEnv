@@ -17,6 +17,11 @@ pub enum Error {
     VaultNotFound(String),
     #[error("vault was opened read-only")]
     ReadOnly,
+    #[error(
+        "untrusted vault: {0}; if this is expected, review 'shieldenv member ls' and run \
+         'shieldenv trust accept'"
+    )]
+    UntrustedAccess(String),
     #[error("merge conflict: {0}")]
     MergeConflict(String),
     #[error("invalid member name {0:?}: use letters, digits and . _ @ + -, up to 64 characters")]

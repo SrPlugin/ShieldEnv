@@ -40,6 +40,8 @@ pub struct Member {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Inspection {
+    pub vault_id: [u8; VAULT_ID_LEN],
+    pub signer: Option<PublicIdentity>,
     pub has_password: bool,
     pub members: Vec<Member>,
     pub generation: u32,
@@ -386,7 +388,14 @@ pub struct AccessSummary {
 
 pub fn inspect(blob: &[u8]) -> Result<Inspection> {
     let parsed = Parsed::from_bytes(blob)?;
+    let signer = parsed
+        .signature
+        .as_ref()
+        .and_then(|signature| parsed.members.get(usize::from(signature.signer)))
+        .map(|slot| slot.member.public.clone());
     Ok(Inspection {
+        vault_id: parsed.vault_id,
+        signer,
         has_password: parsed.password.is_some(),
         members: parsed.members.into_iter().map(|slot| slot.member).collect(),
         generation: parsed.generation,
@@ -716,6 +725,11 @@ impl Envelope {
     #[must_use]
     pub fn generation(&self) -> u32 {
         self.generation
+    }
+
+    #[must_use]
+    pub fn vault_id(&self) -> [u8; VAULT_ID_LEN] {
+        self.vault_id
     }
 
     #[must_use]

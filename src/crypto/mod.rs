@@ -1,5 +1,5 @@
 mod envelope;
-mod hex;
+pub(crate) mod hex;
 mod identity;
 pub mod identity_file;
 mod kdf;

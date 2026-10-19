@@ -1,5 +1,5 @@
 use shieldenv::app::{Access, Vault};
-use shieldenv::crypto::Identity;
+use shieldenv::crypto::{Identity, Inspection};
 use shieldenv::domain::Environment;
 use shieldenv::storage::{AuditLog, Workspace};
 use shieldenv::{Error, Result};
@@ -51,12 +51,24 @@ impl Context {
             })
     }
 
+    pub(super) fn trusted_inspection(&self, environment: &Environment) -> Result<Inspection> {
+        let inspection = Vault::inspect(&self.workspace, environment)?;
+        self.auth.check_trust(&inspection)?;
+        Ok(inspection)
+    }
+
+    pub(super) fn accept_trust(&self) -> Result<bool> {
+        let inspection = Vault::inspect(&self.workspace, &self.environment)?;
+        self.auth.accept_trust(&inspection)
+    }
+
     pub(super) fn open_reusing(
         &self,
         environment: &Environment,
         access: Access,
         credentials: &Credentials,
     ) -> Result<Vault> {
+        self.trusted_inspection(environment)?;
         if let Some(identity) = &credentials.identity {
             match Vault::open(&self.workspace, environment, identity, access) {
                 Err(Error::NotAMember) => {}

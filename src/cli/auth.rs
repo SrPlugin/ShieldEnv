@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use secrecy::SecretString;
 use shieldenv::crypto::{Identity, Inspection, Unlock};
 use shieldenv::storage::keystore::{self, Located, Sources};
+use shieldenv::storage::{Outcome, TrustStore};
 use shieldenv::{Error, Result};
 
 use super::output::notice;
@@ -29,6 +30,7 @@ impl Credentials {
 pub(super) struct Authenticator {
     pub(super) prompter: Prompter,
     identities: Sources,
+    trust: Option<TrustStore>,
     actor: RefCell<Option<String>>,
 }
 
@@ -37,6 +39,7 @@ impl Authenticator {
         Self {
             prompter: Prompter::from_environment(),
             identities: Sources::from_environment(),
+            trust: TrustStore::default_path().map(TrustStore::new),
             actor: RefCell::new(None),
         }
     }
@@ -47,6 +50,7 @@ impl Authenticator {
         inspection: &Inspection,
         mut open: impl FnMut(Unlock<'_>) -> Result<T>,
     ) -> Result<(T, Credentials)> {
+        self.check_trust(inspection)?;
         if let Some(identity) = self.member_identity(inspection)? {
             let opened = open(Unlock::Identity(&identity))?;
             self.set_actor(actor_name(inspection, &identity));
@@ -76,6 +80,41 @@ impl Authenticator {
                 identity: None,
             },
         ))
+    }
+
+    pub(super) fn check_trust(&self, inspection: &Inspection) -> Result<()> {
+        let Some(store) = &self.trust else {
+            return if inspection.members.is_empty() {
+                Ok(())
+            } else {
+                Err(Error::NoDataDirectory)
+            };
+        };
+        match store.check(inspection)? {
+            Outcome::FirstUse => notice(format!(
+                "trusting these administrators for this vault from now on: {}",
+                administrators(inspection)
+            )),
+            Outcome::Advanced => notice(format!(
+                "the administrators of this vault changed; now trusting: {}",
+                administrators(inspection)
+            )),
+            Outcome::NoMembers | Outcome::Unchanged => {}
+        }
+        Ok(())
+    }
+
+    pub(super) fn accept_trust(&self, inspection: &Inspection) -> Result<bool> {
+        if inspection.members.is_empty() {
+            return Ok(false);
+        }
+        let store = self.trust.as_ref().ok_or(Error::NoDataDirectory)?;
+        store.record(inspection)?;
+        notice(format!(
+            "trusting these administrators for this vault: {}",
+            administrators(inspection)
+        ));
+        Ok(true)
     }
 
     pub(super) fn active_identity(&self) -> Result<Identity> {
@@ -133,6 +172,16 @@ impl Authenticator {
     fn set_actor(&self, actor: String) {
         *self.actor.borrow_mut() = Some(actor);
     }
+}
+
+fn administrators(inspection: &Inspection) -> String {
+    inspection
+        .members
+        .iter()
+        .filter(|member| member.admin)
+        .map(|member| format!("{} ({})", member.name, member.public.fingerprint()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn actor_name(inspection: &Inspection, identity: &Identity) -> String {

@@ -29,6 +29,7 @@ pub(super) fn merge(base: &Path, ours: &Path, theirs: &Path) -> Result<ExitCode>
     })?;
     let unlock = credentials.as_unlock().ok_or(Error::NoAccess)?;
     let merged = merge_vaults(&base_bytes, &our_bytes, &their_bytes, unlock)?;
+    authenticator.check_trust(&inspect(&merged)?)?;
     write_atomic(ours, &merged, WriteMode::Replace)?;
     notice("merged vault");
     Ok(ExitCode::SUCCESS)
