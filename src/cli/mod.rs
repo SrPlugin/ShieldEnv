@@ -1,6 +1,9 @@
 pub mod args;
 pub mod commands;
+mod context;
 pub mod hardening;
+mod identity;
+mod output;
 pub mod prompt;
 
 use std::io::ErrorKind;

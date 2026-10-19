@@ -1,22 +1,23 @@
 use std::ffi::OsString;
-use std::fmt::{Display, Write as _};
-use std::io::{self, Write};
+use std::fmt::Write as _;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{self, ExitCode};
 
 use clap::CommandFactory;
 use clap_complete::Shell;
-use secrecy::SecretString;
 use shieldenv::app::{Access, Charset, Format, Vault, parse_dotenv, random_secret, render, scan};
-use shieldenv::crypto::{Identity, KEY_LEN, Key, identity_file, shamir};
+use shieldenv::crypto::{KEY_LEN, Key, shamir};
 use shieldenv::domain::{Environment, Pattern, SecretKey, unix_now};
 use shieldenv::storage::file::{WriteMode, create_private_dir, read_bounded, write_atomic};
-use shieldenv::storage::keystore::{self, Sources};
 use shieldenv::storage::{AuditLog, History, Scope, Workspace};
 use shieldenv::{Error, Result};
 use zeroize::Zeroizing;
 
-use super::args::{Cli, Command, IdCommand, SharesCommand};
+use super::args::{Cli, Command, SharesCommand};
+use super::context::Context;
+use super::identity::manage_identity;
+use super::output::{format_date, notice, plural, write_stdout};
 use super::prompt::{self, NEW_PASSWORD_VARIABLE, PASSWORD_VARIABLE, Prompter};
 
 const IMPORT_LIMIT: usize = 16 << 20;
@@ -64,46 +65,6 @@ fn init(scope: Scope, working_directory: &Path) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn manage_identity(action: IdCommand) -> Result<ExitCode> {
-    match action {
-        IdCommand::New {
-            file,
-            no_passphrase,
-        } => {
-            let path = file
-                .or_else(keystore::default_path)
-                .ok_or(Error::NoDataDirectory)?;
-            if path.exists() {
-                return Err(Error::AlreadyExists(path));
-            }
-            let identity = Identity::generate()?;
-            let contents = if no_passphrase {
-                let mut text = identity.secret_text();
-                text.push('\n');
-                Zeroizing::new(text.as_bytes().to_vec())
-            } else {
-                let passphrase = Prompter::from_environment().new_identity_passphrase()?;
-                Zeroizing::new(identity_file::seal(&identity, &passphrase)?)
-            };
-            keystore::create(&path, &contents)?;
-            let public = identity.public();
-            notice(format!(
-                "identity saved to {} (fingerprint {}); give the line below to an administrator",
-                path.display(),
-                public.fingerprint()
-            ));
-            write_stdout(format!("{public}\n").as_bytes())?;
-        }
-        IdCommand::Show => {
-            let located =
-                keystore::locate(&Sources::from_environment())?.ok_or(Error::NoIdentity)?;
-            notice(format!("fingerprint {}", located.public().fingerprint()));
-            write_stdout(format!("{}\n", located.public()).as_bytes())?;
-        }
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
 fn scan_for_secrets(path: &Path) -> Result<ExitCode> {
     let findings = scan(path)?;
     let mut output = String::new();
@@ -136,12 +97,6 @@ fn completions(shell: Shell) -> Result<ExitCode> {
     clap_complete::generate(shell, &mut Cli::command(), "shieldenv", &mut output);
     write_stdout(&output)?;
     Ok(ExitCode::SUCCESS)
-}
-
-struct Context {
-    workspace: Workspace,
-    environment: Environment,
-    prompter: Prompter,
 }
 
 impl Context {
@@ -629,59 +584,6 @@ impl Context {
         write_stdout(output.as_bytes())?;
         Ok(ExitCode::SUCCESS)
     }
-
-    fn open(&self, environment: &Environment, access: Access) -> Result<Vault> {
-        self.unlock(environment, access).map(|(vault, _)| vault)
-    }
-
-    fn unlock(&self, environment: &Environment, access: Access) -> Result<(Vault, SecretString)> {
-        if !Vault::exists(&self.workspace, environment) {
-            return Err(Error::VaultNotFound(environment.to_string()));
-        }
-        self.prompter.unlock(environment, |password| {
-            Vault::open(&self.workspace, environment, password, access)
-        })
-    }
-
-    fn open_reusing(
-        &self,
-        environment: &Environment,
-        access: Access,
-        password: &SecretString,
-    ) -> Result<Vault> {
-        match Vault::open(&self.workspace, environment, password, access) {
-            Err(Error::Authentication) => self.open(environment, access),
-            result => result,
-        }
-    }
-
-    fn open_or_create(&self, environment: &Environment) -> Result<Vault> {
-        if Vault::exists(&self.workspace, environment) {
-            return self.open(environment, Access::Write);
-        }
-        notice(format!("creating vault for '{environment}'"));
-        let password = self.prompter.initial_password(environment)?;
-        Vault::create(&self.workspace, environment, &password)
-    }
-
-    fn audited<T>(
-        &self,
-        action: &str,
-        keys: &[&str],
-        operation: impl FnOnce() -> Result<T>,
-    ) -> Result<T> {
-        let result = operation();
-        self.record(&self.environment, action, keys, result.is_ok());
-        result
-    }
-
-    fn record(&self, environment: &Environment, action: &str, keys: &[&str], ok: bool) {
-        if let Err(error) =
-            AuditLog::new(self.workspace.audit_path()).record(action, environment, keys, ok)
-        {
-            notice(format!("warning: audit log not written: {error}"));
-        }
-    }
 }
 
 #[cfg(unix)]
@@ -704,32 +606,6 @@ fn launch(mut command: process::Command) -> Result<ExitCode> {
         .map_or(ExitCode::FAILURE, ExitCode::from))
 }
 
-fn format_date(seconds: u64) -> String {
-    let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
-    let stamp = humantime::format_rfc3339_seconds(time).to_string();
-    stamp.get(..10).unwrap_or(&stamp).to_owned()
-}
-
 fn share_file_name(index: u8) -> String {
     format!("{SHARE_PREFIX}{index}{SHARE_SUFFIX}")
-}
-
-fn plural(count: usize, noun: &str) -> String {
-    if count == 1 {
-        format!("1 {noun}")
-    } else {
-        format!("{count} {noun}s")
-    }
-}
-
-fn notice(message: impl Display) {
-    eprintln!("{message}");
-}
-
-fn write_stdout(bytes: &[u8]) -> Result<()> {
-    let mut stdout = io::stdout().lock();
-    stdout
-        .write_all(bytes)
-        .and_then(|()| stdout.flush())
-        .map_err(Error::Terminal)
 }
