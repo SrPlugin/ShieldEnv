@@ -200,6 +200,19 @@ pub enum Command {
         action: MemberCommand,
     },
 
+    #[command(about = "Make git merge vault files key by key")]
+    GitSetup,
+
+    #[command(
+        hide = true,
+        about = "Merge driver used by git; run 'git-setup' instead"
+    )]
+    Merge {
+        base: PathBuf,
+        ours: PathBuf,
+        theirs: PathBuf,
+    },
+
     #[command(about = "Manage your personal identity")]
     Id {
         #[command(subcommand)]

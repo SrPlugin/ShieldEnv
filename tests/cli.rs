@@ -995,3 +995,121 @@ fn run_file_delivers_secrets_as_files_not_variables() {
         ])
         .code(9);
 }
+
+fn git_available() -> bool {
+    std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+fn git(sandbox: &Sandbox, arguments: &[&str]) -> std::process::Output {
+    std::process::Command::new("git")
+        .current_dir(sandbox.project())
+        .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+        .args([
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "init.defaultBranch=main",
+        ])
+        .args(arguments)
+        .env("HOME", sandbox.home())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("SHIELDENV_PASSWORD", PASSWORD)
+        .env_remove("XDG_CONFIG_HOME")
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn git_merges_vault_files_key_by_key() {
+    if !git_available() {
+        return;
+    }
+    let sandbox = Sandbox::with_secrets(&[("SHARED", "1")]);
+    assert!(git(&sandbox, &["init", "-q"]).status.success());
+    sandbox
+        .run(&["git-setup"])
+        .success()
+        .stderr(contains("key by key"));
+    sandbox.run(&["git-setup"]).success();
+    let attributes = fs::read_to_string(sandbox.project().join(".gitattributes")).unwrap();
+    assert_eq!(attributes.matches("merge=shieldenv").count(), 1);
+    assert!(git(&sandbox, &["add", "-A"]).status.success());
+    assert!(git(&sandbox, &["commit", "-qm", "base"]).status.success());
+    assert!(
+        git(&sandbox, &["checkout", "-qb", "feature"])
+            .status
+            .success()
+    );
+    sandbox.run(&["set", "FROM_FEATURE", "f"]).success();
+    assert!(
+        git(&sandbox, &["commit", "-qam", "feature"])
+            .status
+            .success()
+    );
+    assert!(git(&sandbox, &["checkout", "-q", "main"]).status.success());
+    sandbox.run(&["set", "FROM_MAIN", "m"]).success();
+    assert!(git(&sandbox, &["commit", "-qam", "main"]).status.success());
+    let merge = git(&sandbox, &["merge", "-q", "feature", "-m", "merge"]);
+    assert!(
+        merge.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&merge.stdout),
+        String::from_utf8_lossy(&merge.stderr)
+    );
+    assert_eq!(sandbox.stdout(&["ls"]), "FROM_FEATURE\nFROM_MAIN\nSHARED\n");
+    sandbox.run(&["verify"]).success();
+}
+
+#[test]
+fn git_reports_conflicting_secrets_without_leaking_them() {
+    if !git_available() {
+        return;
+    }
+    let sandbox = Sandbox::with_secrets(&[("TOKEN", "base-value")]);
+    assert!(git(&sandbox, &["init", "-q"]).status.success());
+    sandbox.run(&["git-setup"]).success();
+    assert!(git(&sandbox, &["add", "-A"]).status.success());
+    assert!(git(&sandbox, &["commit", "-qm", "base"]).status.success());
+    assert!(
+        git(&sandbox, &["checkout", "-qb", "feature"])
+            .status
+            .success()
+    );
+    sandbox.run(&["set", "TOKEN", "feature-secret"]).success();
+    assert!(
+        git(&sandbox, &["commit", "-qam", "feature"])
+            .status
+            .success()
+    );
+    assert!(git(&sandbox, &["checkout", "-q", "main"]).status.success());
+    sandbox.run(&["set", "TOKEN", "main-secret"]).success();
+    assert!(git(&sandbox, &["commit", "-qam", "main"]).status.success());
+    let merge = git(&sandbox, &["merge", "-q", "feature", "-m", "merge"]);
+    assert!(!merge.status.success());
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&merge.stdout),
+        String::from_utf8_lossy(&merge.stderr)
+    );
+    assert!(output.contains("TOKEN"), "{output}");
+    assert!(!output.contains("feature-secret") && !output.contains("main-secret"));
+}
+
+#[test]
+fn git_setup_requires_a_repository() {
+    if !git_available() {
+        return;
+    }
+    let sandbox = Sandbox::new();
+    sandbox
+        .command()
+        .current_dir(sandbox.home())
+        .env("GIT_CEILING_DIRECTORIES", sandbox.root.path())
+        .arg("git-setup")
+        .assert()
+        .code(1)
+        .stderr(contains("not a git repository"));
+}

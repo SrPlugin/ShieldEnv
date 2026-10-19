@@ -19,6 +19,7 @@ use zeroize::Zeroizing;
 
 use super::args::{Cli, Command, ExportFormat, FileDelivery, MemberCommand, SharesCommand};
 use super::context::Context;
+use super::git;
 use super::identity::manage_identity;
 use super::output::{format_date, notice, plural, write_stdout};
 use super::prompt::{self, NEW_PASSWORD_VARIABLE, PASSWORD_VARIABLE};
@@ -46,6 +47,8 @@ pub fn execute(cli: Cli) -> Result<ExitCode> {
         Command::Completions { shell } => completions(shell),
         Command::Scan { path } => scan_for_secrets(&path),
         Command::Id { action } => manage_identity(action),
+        Command::GitSetup => git::setup(&working_directory),
+        Command::Merge { base, ours, theirs } => git::merge(&base, &ours, &theirs),
         command => Context::new(Workspace::locate(scope, &working_directory)?, environment)
             .dispatch(command),
     }
@@ -195,6 +198,8 @@ impl Context {
             Command::Init
             | Command::Completions { .. }
             | Command::Scan { .. }
+            | Command::GitSetup
+            | Command::Merge { .. }
             | Command::Id { .. } => Ok(ExitCode::SUCCESS),
         }
     }

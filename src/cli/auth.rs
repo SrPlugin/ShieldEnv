@@ -16,6 +16,16 @@ pub(super) struct Credentials {
     pub(super) identity: Option<Identity>,
 }
 
+impl Credentials {
+    pub(super) fn as_unlock(&self) -> Option<Unlock<'_>> {
+        match (&self.identity, &self.password) {
+            (Some(identity), _) => Some(Unlock::Identity(identity)),
+            (None, Some(password)) => Some(Unlock::Password(password)),
+            (None, None) => None,
+        }
+    }
+}
+
 pub(super) struct Authenticator {
     pub(super) prompter: Prompter,
     identities: Sources,

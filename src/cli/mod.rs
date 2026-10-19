@@ -2,6 +2,7 @@ pub mod args;
 mod auth;
 pub mod commands;
 mod context;
+mod git;
 pub mod hardening;
 mod identity;
 mod members;
