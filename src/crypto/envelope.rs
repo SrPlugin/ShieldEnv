@@ -10,26 +10,34 @@ use crate::wire::Reader;
 use crate::{Error, Result};
 
 const MAGIC: [u8; 4] = *b"SHLD";
+const VAULT_ID_LEN: usize = 16;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
 const TAG_LEN: usize = 16;
 const WRAPPED_KEY_LEN: usize = KEY_LEN + TAG_LEN;
-const KEY_WRAP_AAD_LEN: usize = MAGIC.len() + 1 + 3 * 4 + SALT_LEN + NONCE_LEN;
+const PASSWORD_SLOT: u8 = 1;
+const MAX_SLOTS: usize = 64;
 
-pub const FORMAT_VERSION: u8 = 1;
-pub const HEADER_LEN: usize = KEY_WRAP_AAD_LEN + WRAPPED_KEY_LEN + NONCE_LEN;
+pub const FORMAT_VERSION: u8 = 2;
 pub const MAX_VAULT_LEN: usize = 16 << 20;
 
+type VaultId = [u8; VAULT_ID_LEN];
+
 #[derive(Debug, Clone)]
-struct KeySlot {
+struct PasswordSlot {
     params: KdfParams,
     salt: [u8; SALT_LEN],
     nonce: [u8; NONCE_LEN],
     wrapped: [u8; WRAPPED_KEY_LEN],
 }
 
-impl KeySlot {
-    fn seal(data_key: &Key, password: &SecretString, params: KdfParams) -> Result<Self> {
+impl PasswordSlot {
+    fn seal(
+        vault_id: &VaultId,
+        data_key: &Key,
+        password: &SecretString,
+        params: KdfParams,
+    ) -> Result<Self> {
         let mut slot = Self {
             params,
             salt: [0; SALT_LEN],
@@ -43,7 +51,7 @@ impl KeySlot {
         let tag = cipher(&key_encryption_key)?
             .encrypt_inout_detached(
                 &XNonce::from(slot.nonce),
-                &slot.associated_data(),
+                &slot.associated_data(vault_id),
                 InOutBuf::from(buffer.as_mut_slice()),
             )
             .map_err(|_| Error::Malformed("key wrapping failed"))?;
@@ -53,22 +61,18 @@ impl KeySlot {
         Ok(slot)
     }
 
-    fn unseal(&self, password: &SecretString) -> Result<Key> {
+    fn unseal(&self, vault_id: &VaultId, password: &SecretString) -> Result<Key> {
         let key_encryption_key = derive(password, &self.salt, self.params)?;
-        self.unseal_with(&key_encryption_key)
-    }
-
-    fn unseal_with(&self, key_encryption_key: &Key) -> Result<Key> {
         let (ciphertext, tag) = self
             .wrapped
             .split_first_chunk::<KEY_LEN>()
             .ok_or(Error::Malformed("wrapped key truncated"))?;
         let tag = Tag::try_from(tag).map_err(|_| Error::Malformed("wrapped key truncated"))?;
         let mut data_key = Zeroizing::new(*ciphertext);
-        cipher(key_encryption_key)?
+        cipher(&key_encryption_key)?
             .decrypt_inout_detached(
                 &XNonce::from(self.nonce),
-                &self.associated_data(),
+                &self.associated_data(vault_id),
                 InOutBuf::from(data_key.as_mut_slice()),
                 &tag,
             )
@@ -76,27 +80,70 @@ impl KeySlot {
         Ok(data_key)
     }
 
-    fn associated_data(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(KEY_WRAP_AAD_LEN);
+    fn associated_data(&self, vault_id: &VaultId) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(64);
         bytes.extend_from_slice(&MAGIC);
         bytes.push(FORMAT_VERSION);
-        bytes.extend_from_slice(&self.params.memory_kib.to_le_bytes());
-        bytes.extend_from_slice(&self.params.iterations.to_le_bytes());
-        bytes.extend_from_slice(&self.params.parallelism.to_le_bytes());
-        bytes.extend_from_slice(&self.salt);
-        bytes.extend_from_slice(&self.nonce);
+        bytes.extend_from_slice(vault_id);
+        bytes.push(PASSWORD_SLOT);
+        self.encode_parameters(&mut bytes);
         bytes
     }
 
-    fn encode_header(&self, payload_nonce: &[u8; NONCE_LEN], output: &mut Vec<u8>) {
-        output.extend_from_slice(&self.associated_data());
+    fn encode_parameters(&self, output: &mut Vec<u8>) {
+        output.extend_from_slice(&self.params.memory_kib.to_le_bytes());
+        output.extend_from_slice(&self.params.iterations.to_le_bytes());
+        output.extend_from_slice(&self.params.parallelism.to_le_bytes());
+        output.extend_from_slice(&self.salt);
+        output.extend_from_slice(&self.nonce);
+    }
+
+    fn encode(&self, output: &mut Vec<u8>) {
+        output.push(PASSWORD_SLOT);
+        self.encode_parameters(output);
         output.extend_from_slice(&self.wrapped);
-        output.extend_from_slice(payload_nonce);
+    }
+
+    fn decode(reader: &mut Reader<'_>) -> Result<Self> {
+        let params = KdfParams {
+            memory_kib: reader.u32()?,
+            iterations: reader.u32()?,
+            parallelism: reader.u32()?,
+        }
+        .validate()?;
+        Ok(Self {
+            params,
+            salt: reader.array()?,
+            nonce: reader.array()?,
+            wrapped: reader.array()?,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+enum Slot {
+    Password(PasswordSlot),
+}
+
+impl Slot {
+    fn encode(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Password(slot) => slot.encode(output),
+        }
+    }
+
+    fn decode(reader: &mut Reader<'_>) -> Result<Self> {
+        match reader.u8()? {
+            PASSWORD_SLOT => PasswordSlot::decode(reader).map(Self::Password),
+            _ => Err(Error::Malformed("unknown access slot")),
+        }
     }
 }
 
 struct Parsed<'a> {
-    slot: KeySlot,
+    vault_id: VaultId,
+    generation: u32,
+    slots: Vec<Slot>,
     payload_nonce: [u8; NONCE_LEN],
     header: &'a [u8],
     ciphertext: &'a [u8],
@@ -116,23 +163,28 @@ impl<'a> Parsed<'a> {
         if version != FORMAT_VERSION {
             return Err(Error::UnsupportedVersion(version));
         }
-        let params = KdfParams {
-            memory_kib: reader.u32()?,
-            iterations: reader.u32()?,
-            parallelism: reader.u32()?,
+        let vault_id = reader.array()?;
+        let generation = reader.u32()?;
+        let slot_count = usize::from(reader.u8()?);
+        if slot_count == 0 || slot_count > MAX_SLOTS {
+            return Err(Error::Malformed("invalid number of access slots"));
         }
-        .validate()?;
-        let slot = KeySlot {
-            params,
-            salt: reader.array()?,
-            nonce: reader.array()?,
-            wrapped: reader.array()?,
-        };
+        let slots = (0..slot_count)
+            .map(|_| Slot::decode(&mut reader))
+            .collect::<Result<Vec<_>>>()?;
+        let password_slots = slots
+            .iter()
+            .filter(|slot| matches!(slot, Slot::Password(_)))
+            .count();
+        if password_slots > 1 {
+            return Err(Error::Malformed("duplicate password slot"));
+        }
         let payload_nonce = reader.array()?;
-        let body = reader.rest();
+        let header_len = blob.len() - reader.remaining_len();
         let header = blob
-            .get(..HEADER_LEN)
+            .get(..header_len)
             .ok_or(Error::Malformed("truncated header"))?;
+        let body = reader.rest();
         let ciphertext_len = body
             .len()
             .checked_sub(TAG_LEN)
@@ -142,7 +194,9 @@ impl<'a> Parsed<'a> {
             .ok_or(Error::Malformed("truncated payload"))?;
         let tag = Tag::try_from(tag).map_err(|_| Error::Malformed("truncated payload"))?;
         Ok(Self {
-            slot,
+            vault_id,
+            generation,
+            slots,
             payload_nonce,
             header,
             ciphertext,
@@ -165,7 +219,9 @@ impl<'a> Parsed<'a> {
 }
 
 pub struct Envelope {
-    slot: KeySlot,
+    vault_id: VaultId,
+    generation: u32,
+    slots: Vec<Slot>,
     data_key: Key,
 }
 
@@ -175,15 +231,27 @@ impl Envelope {
     }
 
     fn create_with(password: &SecretString, params: KdfParams) -> Result<Self> {
-        let mut data_key = Zeroizing::new([0; KEY_LEN]);
-        fill_random(data_key.as_mut())?;
-        let slot = KeySlot::seal(&data_key, password, params)?;
-        Ok(Self { slot, data_key })
+        let mut vault_id = [0; VAULT_ID_LEN];
+        fill_random(&mut vault_id)?;
+        let data_key = random_key()?;
+        let slot = PasswordSlot::seal(&vault_id, &data_key, password, params)?;
+        Ok(Self {
+            vault_id,
+            generation: 0,
+            slots: vec![Slot::Password(slot)],
+            data_key,
+        })
     }
 
     pub fn open(blob: &[u8], password: &SecretString) -> Result<(Self, Zeroizing<Vec<u8>>)> {
         let parsed = Parsed::from_bytes(blob)?;
-        let data_key = parsed.slot.unseal(password)?;
+        let slot = parsed
+            .slots
+            .iter()
+            .map(|Slot::Password(slot)| slot)
+            .next()
+            .ok_or(Error::Authentication)?;
+        let data_key = slot.unseal(&parsed.vault_id, password)?;
         Self::finish_open(parsed, data_key)
     }
 
@@ -196,7 +264,9 @@ impl Envelope {
         let plaintext = parsed.decrypt(&data_key)?;
         Ok((
             Self {
-                slot: parsed.slot,
+                vault_id: parsed.vault_id,
+                generation: parsed.generation,
+                slots: parsed.slots,
                 data_key,
             },
             plaintext,
@@ -204,29 +274,43 @@ impl Envelope {
     }
 
     pub fn rewrap(&mut self, password: &SecretString) -> Result<()> {
-        self.slot = KeySlot::seal(&self.data_key, password, KdfParams::RECOMMENDED)?;
+        let slot = PasswordSlot::seal(
+            &self.vault_id,
+            &self.data_key,
+            password,
+            KdfParams::RECOMMENDED,
+        )?;
+        self.slots
+            .retain(|existing| !matches!(existing, Slot::Password(_)));
+        self.slots.insert(0, Slot::Password(slot));
         Ok(())
     }
 
-    pub fn reseal_for(&self, password: &SecretString) -> Result<Self> {
-        let mut data_key = Zeroizing::new([0; KEY_LEN]);
-        fill_random(data_key.as_mut())?;
-        let slot = KeySlot::seal(&data_key, password, self.slot.params)?;
-        Ok(Self { slot, data_key })
+    pub fn rekey(&mut self, password: &SecretString) -> Result<()> {
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .ok_or(Error::LimitExceeded("vault key rotated too many times"))?;
+        self.data_key = random_key()?;
+        self.rewrap(password)
+    }
+
+    pub fn sibling(&self, password: &SecretString) -> Result<Self> {
+        Self::create_with(password, self.params().unwrap_or(KdfParams::RECOMMENDED))
     }
 
     pub fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
-        let total_len = HEADER_LEN + plaintext.len() + TAG_LEN;
-        if total_len > MAX_VAULT_LEN {
-            return Err(Error::LimitExceeded("vault file larger than 16 MiB"));
-        }
         let mut payload_nonce = [0; NONCE_LEN];
         fill_random(&mut payload_nonce)?;
-        let mut output = Vec::with_capacity(total_len);
-        self.slot.encode_header(&payload_nonce, &mut output);
+        let mut output = self.encode_header(&payload_nonce)?;
+        let header_len = output.len();
+        if header_len + plaintext.len() + TAG_LEN > MAX_VAULT_LEN {
+            return Err(Error::LimitExceeded("vault file larger than 16 MiB"));
+        }
+        output.reserve(plaintext.len() + TAG_LEN);
         output.extend_from_slice(plaintext);
         let (header, body) = output
-            .split_at_mut_checked(HEADER_LEN)
+            .split_at_mut_checked(header_len)
             .ok_or(Error::Malformed("header encoding failed"))?;
         let tag = cipher(&self.data_key)?
             .encrypt_inout_detached(&XNonce::from(payload_nonce), header, InOutBuf::from(body))
@@ -235,9 +319,33 @@ impl Envelope {
         Ok(output)
     }
 
+    fn encode_header(&self, payload_nonce: &[u8; NONCE_LEN]) -> Result<Vec<u8>> {
+        let slot_count = u8::try_from(self.slots.len())
+            .map_err(|_| Error::LimitExceeded("too many access slots"))?;
+        let mut header = Vec::with_capacity(160);
+        header.extend_from_slice(&MAGIC);
+        header.push(FORMAT_VERSION);
+        header.extend_from_slice(&self.vault_id);
+        header.extend_from_slice(&self.generation.to_le_bytes());
+        header.push(slot_count);
+        for slot in &self.slots {
+            slot.encode(&mut header);
+        }
+        header.extend_from_slice(payload_nonce);
+        Ok(header)
+    }
+
     #[must_use]
-    pub fn params(&self) -> KdfParams {
-        self.slot.params
+    pub fn params(&self) -> Option<KdfParams> {
+        self.slots
+            .iter()
+            .map(|Slot::Password(slot)| slot.params)
+            .next()
+    }
+
+    #[must_use]
+    pub fn generation(&self) -> u32 {
+        self.generation
     }
 
     #[must_use]
@@ -250,9 +358,16 @@ impl fmt::Debug for Envelope {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Envelope")
-            .field("params", &self.slot.params)
+            .field("generation", &self.generation)
+            .field("slots", &self.slots.len())
             .finish_non_exhaustive()
     }
+}
+
+fn random_key() -> Result<Key> {
+    let mut key = Zeroizing::new([0; KEY_LEN]);
+    fill_random(key.as_mut())?;
+    Ok(key)
 }
 
 fn cipher(key: &Key) -> Result<XChaCha20Poly1305> {
@@ -270,40 +385,40 @@ mod tests {
         iterations: 2,
         parallelism: 1,
     };
+    const PASSWORD: &str = "correct horse battery";
 
     fn password(text: &str) -> SecretString {
         SecretString::from(text.to_owned())
     }
 
+    fn envelope() -> Envelope {
+        Envelope::create_with(&password(PASSWORD), FAST).unwrap()
+    }
+
     fn sealed(plaintext: &[u8]) -> Vec<u8> {
-        Envelope::create_with(&password("correct horse battery"), FAST)
-            .unwrap()
-            .seal(plaintext)
-            .unwrap()
+        envelope().seal(plaintext).unwrap()
     }
 
     #[test]
     fn round_trip_restores_plaintext() {
         let blob = sealed(b"secret payload");
-        assert_eq!(blob.len(), HEADER_LEN + 14 + TAG_LEN);
-        let (envelope, plaintext) =
-            Envelope::open(&blob, &password("correct horse battery")).unwrap();
+        let (opened, plaintext) = Envelope::open(&blob, &password(PASSWORD)).unwrap();
         assert_eq!(plaintext.as_slice(), b"secret payload");
-        assert_eq!(envelope.params(), FAST);
+        assert_eq!(opened.params(), Some(FAST));
+        assert_eq!(opened.generation(), 0);
     }
 
     #[test]
     fn empty_payload_round_trips() {
         let blob = sealed(b"");
-        let (_, plaintext) = Envelope::open(&blob, &password("correct horse battery")).unwrap();
+        let (_, plaintext) = Envelope::open(&blob, &password(PASSWORD)).unwrap();
         assert!(plaintext.is_empty());
     }
 
     #[test]
     fn wrong_password_fails_authentication() {
-        let blob = sealed(b"secret");
         assert!(matches!(
-            Envelope::open(&blob, &password("wrong password!")),
+            Envelope::open(&sealed(b"secret"), &password("wrong password!")),
             Err(Error::Authentication)
         ));
     }
@@ -315,7 +430,7 @@ mod tests {
             let mut tampered = blob.clone();
             tampered[index] ^= 0x01;
             assert!(
-                Envelope::open(&tampered, &password("correct horse battery")).is_err(),
+                Envelope::open(&tampered, &password(PASSWORD)).is_err(),
                 "flip at byte {index} accepted"
             );
         }
@@ -325,20 +440,20 @@ mod tests {
     fn every_truncation_is_rejected() {
         let blob = sealed(b"payload");
         for len in 0..blob.len() {
-            assert!(Envelope::open(&blob[..len], &password("correct horse battery")).is_err());
+            assert!(Envelope::open(&blob[..len], &password(PASSWORD)).is_err());
         }
         let mut extended = blob;
         extended.push(0);
-        assert!(Envelope::open(&extended, &password("correct horse battery")).is_err());
+        assert!(Envelope::open(&extended, &password(PASSWORD)).is_err());
     }
 
     #[test]
     fn reports_foreign_files_and_versions() {
         let mut blob = sealed(b"payload");
-        blob[4] = 2;
+        blob[4] = 1;
         assert!(matches!(
             Envelope::open(&blob, &password("x")),
-            Err(Error::UnsupportedVersion(2))
+            Err(Error::UnsupportedVersion(1))
         ));
         blob[0] = b'X';
         assert!(matches!(
@@ -366,12 +481,32 @@ mod tests {
         let (reopened, plaintext) = Envelope::open(&blob, &password("new password")).unwrap();
         assert_eq!(plaintext.as_slice(), b"data");
         assert_eq!(**reopened.data_key(), original_key);
-        assert_eq!(reopened.params(), KdfParams::RECOMMENDED);
+        assert_eq!(reopened.params(), Some(KdfParams::RECOMMENDED));
+        assert_eq!(reopened.generation(), 0);
+    }
+
+    #[test]
+    fn rekey_replaces_the_data_key_and_advances_the_generation() {
+        let mut envelope = envelope();
+        let old_blob = envelope.seal(b"data").unwrap();
+        let old_key = envelope.data_key().clone();
+        envelope.rekey(&password(PASSWORD)).unwrap();
+        assert_eq!(envelope.generation(), 1);
+        assert_ne!(*old_key, **envelope.data_key());
+        let new_blob = envelope.seal(b"data").unwrap();
+        assert!(matches!(
+            Envelope::open_with_key(&new_blob, old_key),
+            Err(Error::Authentication)
+        ));
+        let (reopened, plaintext) = Envelope::open(&new_blob, &password(PASSWORD)).unwrap();
+        assert_eq!(plaintext.as_slice(), b"data");
+        assert_eq!(reopened.generation(), 1);
+        assert!(Envelope::open(&old_blob, &password(PASSWORD)).is_ok());
     }
 
     #[test]
     fn data_key_opens_without_password() {
-        let envelope = Envelope::create_with(&password("password"), FAST).unwrap();
+        let envelope = envelope();
         let blob = envelope.seal(b"data").unwrap();
         let (_, plaintext) = Envelope::open_with_key(&blob, envelope.data_key().clone()).unwrap();
         assert_eq!(plaintext.as_slice(), b"data");
@@ -383,17 +518,30 @@ mod tests {
     }
 
     #[test]
-    fn reseal_uses_a_fresh_data_key() {
-        let source = Envelope::create_with(&password("password"), FAST).unwrap();
-        let copy = source.reseal_for(&password("password")).unwrap();
+    fn siblings_have_independent_keys_and_identities() {
+        let source = envelope();
+        let copy = source.sibling(&password(PASSWORD)).unwrap();
         assert_ne!(**source.data_key(), **copy.data_key());
+        assert_ne!(source.vault_id, copy.vault_id);
+        assert_eq!(copy.params(), Some(FAST));
         let blob = copy.seal(b"data").unwrap();
-        assert!(Envelope::open(&blob, &password("password")).is_ok());
+        assert!(Envelope::open(&blob, &password(PASSWORD)).is_ok());
+    }
+
+    #[test]
+    fn slots_cannot_be_transplanted_between_vaults() {
+        let first = sealed(b"one");
+        let second = sealed(b"two");
+        let slot_start = 4 + 1 + VAULT_ID_LEN + 4 + 1;
+        let slot_end = slot_start + 1 + 12 + SALT_LEN + NONCE_LEN + WRAPPED_KEY_LEN;
+        let mut spliced = first.clone();
+        spliced[slot_start..slot_end].copy_from_slice(&second[slot_start..slot_end]);
+        assert!(Envelope::open(&spliced, &password(PASSWORD)).is_err());
     }
 
     #[test]
     fn each_seal_uses_fresh_nonces() {
-        let envelope = Envelope::create_with(&password("password"), FAST).unwrap();
+        let envelope = envelope();
         assert_ne!(
             envelope.seal(b"same").unwrap(),
             envelope.seal(b"same").unwrap()
@@ -415,7 +563,9 @@ mod tests {
         fn arbitrary_header_fields_never_panic(tail in proptest::collection::vec(any::<u8>(), 0..256)) {
             let mut bytes = MAGIC.to_vec();
             bytes.push(FORMAT_VERSION);
-            bytes.extend_from_slice(&[0xFF; 12]);
+            bytes.extend_from_slice(&[0; VAULT_ID_LEN + 4]);
+            bytes.push(1);
+            bytes.push(PASSWORD_SLOT);
             bytes.extend_from_slice(&tail);
             prop_assert!(Envelope::open(&bytes, &password("x")).is_err());
         }

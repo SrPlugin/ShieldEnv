@@ -77,7 +77,7 @@ impl Vault {
         environment: &Environment,
         password: &SecretString,
     ) -> Result<Self> {
-        Self::initialize(workspace, environment, self.envelope.reseal_for(password)?)
+        Self::initialize(workspace, environment, self.envelope.sibling(password)?)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -114,9 +114,22 @@ impl Vault {
         &self.environment
     }
 
+    pub fn rekey(&mut self, password: &SecretString) -> Result<()> {
+        if self.access != Access::Write {
+            return Err(Error::ReadOnly);
+        }
+        self.envelope.rekey(password)?;
+        self.save()
+    }
+
     #[must_use]
-    pub fn params(&self) -> KdfParams {
+    pub fn params(&self) -> Option<KdfParams> {
         self.envelope.params()
+    }
+
+    #[must_use]
+    pub fn generation(&self) -> u32 {
+        self.envelope.generation()
     }
 
     #[must_use]
@@ -219,7 +232,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(reopened.secrets().get("API_KEY"), Some("value"));
-        assert_eq!(reopened.params(), KdfParams::RECOMMENDED);
+        assert_eq!(reopened.params(), Some(KdfParams::RECOMMENDED));
     }
 
     #[test]
@@ -305,6 +318,37 @@ mod tests {
         assert_eq!(reopened.secrets().get("A"), Some("1"));
         drop(reopened);
         assert!(Vault::open(&fixture.workspace, &fixture.environment, &new, Access::Read).is_ok());
+    }
+
+    #[test]
+    fn rekey_invalidates_the_previous_data_key() {
+        let fixture = fixture();
+        let secret = password("correct horse battery");
+        let mut vault = Vault::create(&fixture.workspace, &fixture.environment, &secret).unwrap();
+        insert(&mut vault, "A", "1");
+        vault.save().unwrap();
+        let old_key = vault.data_key().clone();
+        vault.rekey(&secret).unwrap();
+        assert_eq!(vault.generation(), 1);
+        drop(vault);
+        assert!(matches!(
+            Vault::open_with_key(
+                &fixture.workspace,
+                &fixture.environment,
+                old_key,
+                Access::Read
+            ),
+            Err(Error::Authentication)
+        ));
+        let reopened = Vault::open(
+            &fixture.workspace,
+            &fixture.environment,
+            &secret,
+            Access::Read,
+        )
+        .unwrap();
+        assert_eq!(reopened.secrets().get("A"), Some("1"));
+        assert_eq!(reopened.generation(), 1);
     }
 
     #[test]

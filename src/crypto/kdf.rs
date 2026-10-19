@@ -24,8 +24,8 @@ impl KdfParams {
         parallelism: 4,
     };
 
-    const MEMORY_KIB: RangeInclusive<u32> = 19 * 1024..=4 * 1024 * 1024;
-    const ITERATIONS: RangeInclusive<u32> = 2..=32;
+    const MEMORY_KIB: RangeInclusive<u32> = 19 * 1024..=1024 * 1024;
+    const ITERATIONS: RangeInclusive<u32> = 2..=16;
     const PARALLELISM: RangeInclusive<u32> = 1..=16;
 
     pub fn validate(self) -> Result<Self> {
@@ -101,7 +101,7 @@ mod tests {
                 ..FAST
             },
             KdfParams {
-                memory_kib: 4 * 1024 * 1024 + 1,
+                memory_kib: 1024 * 1024 + 1,
                 ..FAST
             },
             KdfParams {
@@ -109,7 +109,7 @@ mod tests {
                 ..FAST
             },
             KdfParams {
-                iterations: 33,
+                iterations: 17,
                 ..FAST
             },
             KdfParams {

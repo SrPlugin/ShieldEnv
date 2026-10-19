@@ -106,6 +106,13 @@ impl Secrets {
             .map(|(key, entry)| (key, entry.value.as_str(), entry.meta))
     }
 
+    pub fn updated_before(&self, cutoff: u64) -> impl Iterator<Item = (&SecretKey, SecretMeta)> {
+        self.0
+            .iter()
+            .filter(move |(_, entry)| entry.meta.updated <= cutoff)
+            .map(|(key, entry)| (key, entry.meta))
+    }
+
     fn store(&mut self, key: SecretKey, value: SecretValue, meta: SecretMeta) -> Result<bool> {
         Self::validate_value(&value)?;
         if !self.0.contains_key(&key) && self.0.len() >= Self::MAX_ENTRIES {
@@ -195,6 +202,20 @@ mod tests {
             })
         );
         assert!(secrets.meta("B").is_none());
+    }
+
+    #[test]
+    fn updated_before_selects_stale_secrets() {
+        let mut secrets = Secrets::new();
+        secrets.insert_at(key("OLD"), value("v"), 100).unwrap();
+        secrets.insert_at(key("EDGE"), value("v"), 200).unwrap();
+        secrets.insert_at(key("NEW"), value("v"), 300).unwrap();
+        let stale: Vec<_> = secrets
+            .updated_before(200)
+            .map(|(key, _)| key.as_str())
+            .collect();
+        assert_eq!(stale, ["EDGE", "OLD"]);
+        assert_eq!(secrets.updated_before(0).count(), 0);
     }
 
     #[test]

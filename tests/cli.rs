@@ -516,3 +516,44 @@ fn scan_reports_plain_text_secrets_without_revealing_them() {
             .and(contains("postgres").not()),
     );
 }
+
+#[test]
+fn ls_long_and_stale_use_secret_timestamps() {
+    let sandbox = Sandbox::with_secrets(&[("FRESH", "1")]);
+    let long = sandbox.stdout(&["ls", "--long"]);
+    let fields: Vec<_> = long.trim_end().split('\t').collect();
+    assert_eq!(fields[0], "FRESH");
+    assert_eq!(fields[1].len(), 10);
+    assert_eq!(fields[2], "0d");
+    assert_eq!(sandbox.stdout(&["ls", "--stale", "1"]), "");
+    assert_eq!(sandbox.stdout(&["ls", "--stale", "0"]), "FRESH\n");
+}
+
+#[test]
+fn rekey_keeps_secrets_but_invalidates_old_shares() {
+    let sandbox = Sandbox::with_secrets(&[("KEY", "value")]);
+    sandbox
+        .run(&["shares", "split", "-n", "2", "-k", "2", "-o", "shares"])
+        .success();
+    sandbox
+        .run(&["rekey"])
+        .success()
+        .stderr(contains("no longer work"));
+    assert_eq!(sandbox.stdout(&["get", "KEY"]), "value\n");
+    sandbox
+        .run(&["status"])
+        .success()
+        .stdout(contains("generation   1"));
+    sandbox
+        .command()
+        .env("SHIELDENV_NEW_PASSWORD", "recovered password")
+        .args([
+            "shares",
+            "recover",
+            "shares/share-1.txt",
+            "shares/share-2.txt",
+        ])
+        .assert()
+        .code(1)
+        .stderr(contains("do not unlock this vault"));
+}

@@ -9,7 +9,7 @@ use clap_complete::Shell;
 use secrecy::SecretString;
 use shieldenv::app::{Access, Charset, Format, Vault, parse_dotenv, random_secret, render, scan};
 use shieldenv::crypto::{KEY_LEN, Key, shamir};
-use shieldenv::domain::{Environment, Pattern, SecretKey};
+use shieldenv::domain::{Environment, Pattern, SecretKey, unix_now};
 use shieldenv::storage::file::{WriteMode, create_private_dir, read_bounded, write_atomic};
 use shieldenv::storage::{AuditLog, Scope, Workspace};
 use shieldenv::{Error, Result};
@@ -22,6 +22,7 @@ const IMPORT_LIMIT: usize = 16 << 20;
 const SHARE_LIMIT: usize = 8 * 1024;
 const SHARE_PREFIX: &str = "share-";
 const SHARE_SUFFIX: &str = ".txt";
+const SECONDS_PER_DAY: u64 = 86_400;
 
 pub fn execute(cli: Cli) -> Result<ExitCode> {
     let Cli {
@@ -125,7 +126,7 @@ impl Context {
                 let names: Vec<&str> = keys.iter().map(SecretKey::as_str).collect();
                 self.audited("rm", &names, || self.remove(&keys))
             }
-            Command::Ls => self.audited("ls", &[], || self.list()),
+            Command::Ls { long, stale } => self.audited("ls", &[], || self.list(long, stale)),
             Command::Import { file } => self.audited("import", &[], || self.import(&file)),
             Command::Export {
                 format,
@@ -145,6 +146,7 @@ impl Context {
             }
             Command::Cp { from, to, force } => self.copy(&from, &to, force),
             Command::Passwd => self.audited("passwd", &[], || self.change_password()),
+            Command::Rekey => self.audited("rekey", &[], || self.rekey()),
             Command::Status => self.audited("status", &[], || self.status()),
             Command::Verify => self.audited("verify", &[], || self.verify()),
             Command::Env => self.environments(),
@@ -248,12 +250,20 @@ impl Context {
         Ok(ExitCode::SUCCESS)
     }
 
-    fn list(&self) -> Result<ExitCode> {
+    fn list(&self, long: bool, stale: Option<u32>) -> Result<ExitCode> {
         let vault = self.open(&self.environment, Access::Read)?;
+        let now = unix_now();
+        let cutoff = stale.map_or(u64::MAX, |days| {
+            now.saturating_sub(u64::from(days) * SECONDS_PER_DAY)
+        });
         let mut output = String::new();
-        for key in vault.secrets().keys() {
-            output.push_str(key.as_str());
-            output.push('\n');
+        for (key, meta) in vault.secrets().updated_before(cutoff) {
+            if long {
+                let age = now.saturating_sub(meta.updated) / SECONDS_PER_DAY;
+                let _ = writeln!(output, "{key}\t{}\t{age}d", format_date(meta.updated));
+            } else {
+                let _ = writeln!(output, "{key}");
+            }
         }
         write_stdout(output.as_bytes())?;
         Ok(ExitCode::SUCCESS)
@@ -398,6 +408,17 @@ impl Context {
         Ok(ExitCode::SUCCESS)
     }
 
+    fn rekey(&self) -> Result<ExitCode> {
+        let (mut vault, password) = self.unlock(&self.environment, Access::Write)?;
+        vault.rekey(&password)?;
+        notice(format!(
+            "rotated the data key of '{}'; earlier recovery shares no longer work, \
+             and secrets seen by former members should be changed",
+            self.environment
+        ));
+        Ok(ExitCode::SUCCESS)
+    }
+
     fn status(&self) -> Result<ExitCode> {
         let vault = self.open(&self.environment, Access::Read)?;
         let metadata = vault.path().metadata().map_err(|source| Error::Io {
@@ -408,17 +429,23 @@ impl Context {
             |_| "unknown".to_owned(),
             |time| humantime::format_rfc3339_seconds(time).to_string(),
         );
-        let params = vault.params();
+        let kdf = vault.params().map_or_else(
+            || "none".to_owned(),
+            |params| {
+                format!(
+                    "argon2id m={} KiB t={} p={}",
+                    params.memory_kib, params.iterations, params.parallelism
+                )
+            },
+        );
         let report = format!(
-            "vault        {}\nscope        {}\nenvironment  {}\nkeys         {}\nsize         {} bytes\nmodified     {modified}\nkdf          argon2id m={} KiB t={} p={}\ncipher       xchacha20-poly1305\n",
+            "vault        {}\nscope        {}\nenvironment  {}\nkeys         {}\nsize         {} bytes\nmodified     {modified}\ngeneration   {}\nkdf          {kdf}\ncipher       xchacha20-poly1305\n",
             vault.path().display(),
             self.workspace.scope(),
             vault.environment(),
             vault.secrets().len(),
             metadata.len(),
-            params.memory_kib,
-            params.iterations,
-            params.parallelism,
+            vault.generation(),
         );
         write_stdout(report.as_bytes())?;
         Ok(ExitCode::SUCCESS)
@@ -597,6 +624,12 @@ fn launch(mut command: process::Command) -> Result<ExitCode> {
         .code()
         .and_then(|code| u8::try_from(code).ok())
         .map_or(ExitCode::FAILURE, ExitCode::from))
+}
+
+fn format_date(seconds: u64) -> String {
+    let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
+    let stamp = humantime::format_rfc3339_seconds(time).to_string();
+    stamp.get(..10).unwrap_or(&stamp).to_owned()
 }
 
 fn share_file_name(index: u8) -> String {

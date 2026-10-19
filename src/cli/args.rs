@@ -82,7 +82,16 @@ pub enum Command {
     },
 
     #[command(about = "List keys")]
-    Ls,
+    Ls {
+        #[arg(short, long, help = "Show when each secret was last changed")]
+        long: bool,
+        #[arg(
+            long,
+            value_name = "DAYS",
+            help = "Only secrets unchanged for at least DAYS"
+        )]
+        stale: Option<u32>,
+    },
 
     #[command(about = "Merge secrets from a .env file")]
     Import { file: PathBuf },
@@ -132,6 +141,9 @@ pub enum Command {
 
     #[command(about = "Change the master password")]
     Passwd,
+
+    #[command(about = "Replace the vault data key and re-encrypt every secret")]
+    Rekey,
 
     #[command(about = "Show vault information")]
     Status,
