@@ -109,7 +109,7 @@ shieldenv [-e <ENV>] [-g] <COMMAND>
 | `ls [-l] [--stale DAYS]` | List keys, optionally with their last change and only those older than `DAYS` |
 | `import <FILE>` | Merge a `.env` file |
 | `export [-f env\|json\|docker\|k8s] [-o FILE] [--force]` | Export to stdout or a protected file. `k8s` also takes `--name` and `--namespace` |
-| `run [--only <GLOB>]... [--file VAR=KEY]... -- <CMD> [ARGS]...` | Run a command with secrets injected |
+| `run [--only <GLOB>]... [--file VAR=KEY]... [--allow-process-hooks] -- <CMD> [ARGS]...` | Run a command with secrets injected |
 | `scan [PATH]` | Find `.env` files and credentials that should not be committed |
 
 ### Vault management
@@ -137,6 +137,7 @@ shieldenv [-e <ENV>] [-g] <COMMAND>
 | `member add <NAME> <PUBLIC> [--admin]` | Give a person or a CI system access |
 | `member rm <NAME>` | Revoke access and rotate the data key |
 | `member ls` | List the members of a vault |
+| `trust accept` | Approve the current administrators of a vault after reviewing them |
 | `git-setup` | Make git merge vault files key by key |
 | `completions <SHELL>` | Print a shell completion script |
 
@@ -222,6 +223,20 @@ shieldenv -e production member rm bob
 - **Least privilege.** Give people only the environments they need. Production can stay with
   administrators and the CI identity.
 - **Audit.** `shieldenv log` shows the member name behind every operation.
+
+### Trust
+
+The first time you open a vault that has members, ShieldEnv remembers who its administrators are, on
+your machine only, much like SSH remembers host keys. From then on:
+
+- a member list signed by someone you never trusted is refused, so a member cannot promote
+  themselves to administrator or lock the real administrators out;
+- a vault whose generation goes backwards is refused as a likely rollback;
+- a legitimate change you have not seen yet, for example an administrator you never met who took over
+  while you were away, is refused until you review it with `member ls` and run `trust accept`.
+
+Someone cloning a repository for the first time has nothing to compare against, so check the
+fingerprints that ShieldEnv prints at first use with the people who run the project.
 
 Where your identity lives, in lookup order:
 
@@ -309,7 +324,12 @@ its environment now holds the secrets.
 
 `--file VAR=KEY` hands a secret over as a file whose path is stored in `VAR`, which suits TLS
 certificates and cloud credential files. On Linux the file lives in memory (`memfd`) and never
-touches the disk; elsewhere it is a `0600` temporary file removed when the command exits.
+touches the disk; the command and its children can read every file delivered this way. Elsewhere
+it is a `0600` temporary file removed when the command exits, which an abrupt kill can leave behind.
+
+Variables that change how programs load code, such as `PATH`, `LD_PRELOAD` or `NODE_OPTIONS`, are
+not injected unless you pass `--allow-process-hooks`, so a vault someone else prepared cannot
+quietly redirect a trusted program.
 
 ## Architecture
 
@@ -348,7 +368,12 @@ tests/
 |--------|------------|
 | Vault file leaked or committed | Argon2id + XChaCha20-Poly1305, authenticated header |
 | Tampered or crafted vault | Every byte authenticated, bounded parameters, size limits, panic-free parsing |
-| Someone adds themselves to a vault | The member list is signed by an administrator and checked on every open |
+| Someone adds themselves to a vault | The member list is signed by an administrator, and the administrators you trusted are remembered locally |
+| Vault replaced by an older version | The highest generation seen is remembered; going back is refused |
+| A hostile branch rewrites access when merging | Merges require the same vault in all three files and re-check trust |
+| A vault injects `LD_PRELOAD` or `PATH` | `run` withholds loader and interpreter variables by default |
+| A `.env` export is sourced in a shell | Values are quoted so `$(...)` and backticks stay literal |
+| Symbolic links planted in `.shieldenv/` | Never followed for logs, locks or history |
 | A removed member keeps reading | Data key rotation, history cleared, password access removed |
 | Secrets in `ps` or shell history | No password flag, values from a hidden prompt or stdin, `gen` never prints |
 | Credentials leaking to child processes | Password and identity variables removed before `run` |
@@ -367,8 +392,9 @@ The crate forbids `unsafe` code and release builds abort on panic.
 Not covered:
 
 - Malware running as your user while a vault is open, and a compromised operating system.
-- Someone who can replace a vault file with an older valid version of it (rollback). Git history is
-  your defence here.
+- A rollback on a machine that has never opened the vault before: with nothing remembered there is
+  nothing to compare, so use git history to review changes to vault files.
+- A member who is also a bad actor can still read everything in the environments they belong to.
 - Secrets a former member already read. Rotate them.
 
 ## Development
