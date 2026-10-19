@@ -19,6 +19,10 @@ pub enum Error {
     ReadOnly,
     #[error("invalid identity: {0}")]
     InvalidIdentity(&'static str),
+    #[error("no identity found; create one with 'shieldenv id new'")]
+    NoIdentity,
+    #[error("{} is readable by other users; run 'chmod 600' on it", .0.display())]
+    InsecurePermissions(PathBuf),
     #[error("wrong password or tampered vault")]
     Authentication,
     #[error("malformed vault: {0}")]

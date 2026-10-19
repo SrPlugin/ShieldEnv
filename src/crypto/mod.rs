@@ -1,6 +1,7 @@
 mod envelope;
 mod hex;
 mod identity;
+pub mod identity_file;
 mod kdf;
 pub mod shamir;
 
