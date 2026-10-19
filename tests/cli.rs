@@ -498,3 +498,21 @@ fn completions_are_generated() {
         .success()
         .stdout(contains("shieldenv"));
 }
+
+#[test]
+fn scan_reports_plain_text_secrets_without_revealing_them() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .run(&["scan"])
+        .success()
+        .stderr(contains("no plain-text secrets"));
+    fs::write(sandbox.project().join(".env"), "DB=postgres://x\n").unwrap();
+    let token = format!("ghp_{}", "x1Y2".repeat(9));
+    fs::write(sandbox.project().join("app.js"), format!("k = '{token}'\n")).unwrap();
+    sandbox.run(&["scan"]).code(1).stdout(
+        contains(".env: environment file")
+            .and(contains("app.js:1: GitHub token"))
+            .and(contains(token.as_str()).not())
+            .and(contains("postgres").not()),
+    );
+}

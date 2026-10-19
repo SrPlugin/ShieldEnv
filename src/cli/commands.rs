@@ -7,7 +7,7 @@ use std::process::{self, ExitCode};
 use clap::CommandFactory;
 use clap_complete::Shell;
 use secrecy::SecretString;
-use shieldenv::app::{Access, Charset, Format, Vault, parse_dotenv, random_secret, render};
+use shieldenv::app::{Access, Charset, Format, Vault, parse_dotenv, random_secret, render, scan};
 use shieldenv::crypto::{KEY_LEN, Key, shamir};
 use shieldenv::domain::{Environment, Pattern, SecretKey};
 use shieldenv::storage::file::{WriteMode, create_private_dir, read_bounded, write_atomic};
@@ -38,6 +38,7 @@ pub fn execute(cli: Cli) -> Result<ExitCode> {
     match command {
         Command::Init => init(scope, &working_directory),
         Command::Completions { shell } => completions(shell),
+        Command::Scan { path } => scan_for_secrets(&path),
         command => Context {
             workspace: Workspace::locate(scope, &working_directory)?,
             environment,
@@ -58,6 +59,33 @@ fn init(scope: Scope, working_directory: &Path) -> Result<ExitCode> {
         notice(format!("shieldenv directory already exists in {directory}"));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn scan_for_secrets(path: &Path) -> Result<ExitCode> {
+    let findings = scan(path)?;
+    let mut output = String::new();
+    for finding in &findings {
+        let location = finding
+            .line
+            .map_or_else(String::new, |line| format!(":{line}"));
+        let _ = writeln!(
+            output,
+            "{}{location}: {}",
+            finding.path.display(),
+            finding.kind
+        );
+    }
+    write_stdout(output.as_bytes())?;
+    if findings.is_empty() {
+        notice("no plain-text secrets found");
+        Ok(ExitCode::SUCCESS)
+    } else {
+        notice(format!(
+            "{} found; move them into a vault with 'shieldenv import' and delete the originals",
+            plural(findings.len(), "finding")
+        ));
+        Ok(ExitCode::FAILURE)
+    }
 }
 
 fn completions(shell: Shell) -> Result<ExitCode> {
@@ -133,7 +161,9 @@ impl Context {
                 }
             },
             Command::Log { count } => self.log(count),
-            Command::Init | Command::Completions { .. } => Ok(ExitCode::SUCCESS),
+            Command::Init | Command::Completions { .. } | Command::Scan { .. } => {
+                Ok(ExitCode::SUCCESS)
+            }
         }
     }
 

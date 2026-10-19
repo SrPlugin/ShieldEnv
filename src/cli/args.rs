@@ -154,6 +154,12 @@ pub enum Command {
         count: usize,
     },
 
+    #[command(about = "Look for .env files and credentials that should not be committed")]
+    Scan {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+
     #[command(about = "Print a shell completion script")]
     Completions { shell: Shell },
 }
