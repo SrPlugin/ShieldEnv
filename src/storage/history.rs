@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use zeroize::Zeroizing;
 
-use super::file::{WriteMode, create_private_dir, read_bounded, write_atomic};
+use super::file::{WriteMode, create_private_subdir, read_bounded, write_atomic};
 use crate::crypto::MAX_VAULT_LEN;
 use crate::{Error, IoContext, Result};
 
@@ -41,7 +41,10 @@ impl History {
         let Some(contents) = read_bounded(current, MAX_VAULT_LEN)? else {
             return Ok(());
         };
-        create_private_dir(&self.directory)?;
+        if let Some(parent) = self.directory.parent() {
+            create_private_subdir(parent)?;
+        }
+        create_private_subdir(&self.directory)?;
         let name = format!(
             "{:012}-{:09}{EXTENSION}",
             taken.as_secs(),
@@ -52,11 +55,21 @@ impl History {
     }
 
     pub fn list(&self) -> Result<Vec<Snapshot>> {
-        let entries = match fs::read_dir(&self.directory) {
-            Ok(entries) => entries,
+        match fs::symlink_metadata(&self.directory) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                return Err(Error::Io {
+                    path: self.directory.clone(),
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "refusing to follow a symbolic link or use a special file",
+                    ),
+                });
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error).at(&self.directory),
-        };
+        }
+        let entries = fs::read_dir(&self.directory).at(&self.directory)?;
         let mut snapshots: Vec<Snapshot> = entries
             .filter_map(std::result::Result::ok)
             .filter_map(|entry| {
@@ -184,6 +197,28 @@ mod tests {
         fixture.history.clear().unwrap();
         assert!(fixture.history.list().unwrap().is_empty());
         assert!(fixture.history.directory.join("notes.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_history_directory_is_never_used() {
+        let fixture = fixture();
+        let elsewhere = tempfile::tempdir().unwrap();
+        fs::write(elsewhere.path().join("000000000001-000000000.vault"), b"x").unwrap();
+        let parent = fixture.history.directory.parent().unwrap().to_path_buf();
+        fs::create_dir_all(&parent).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), &fixture.history.directory).unwrap();
+        fs::write(&fixture.current, b"data").unwrap();
+        assert!(fixture.history.record(&fixture.current).is_err());
+        assert!(fixture.history.list().is_err());
+        assert!(fixture.history.clear().is_err());
+        assert!(
+            elsewhere
+                .path()
+                .join("000000000001-000000000.vault")
+                .exists()
+        );
+        assert_eq!(fs::read_dir(elsewhere.path()).unwrap().count(), 1);
     }
 
     #[test]

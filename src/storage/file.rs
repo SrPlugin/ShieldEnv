@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Read, Write};
+use std::io::{self, ErrorKind, Read, Write};
 use std::path::Path;
 
 use zeroize::Zeroizing;
@@ -46,10 +46,11 @@ pub fn read_bounded(path: &Path, limit: usize) -> Result<Option<Zeroizing<Vec<u8
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error).at(path),
     };
-    let declared = file
-        .metadata()
-        .at(path)
-        .map(|metadata| usize::try_from(metadata.len()).unwrap_or(usize::MAX))?;
+    let metadata = file.metadata().at(path)?;
+    if !metadata.is_file() {
+        return Err(refuse_link(path));
+    }
+    let declared = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
     if declared > limit {
         return Err(Error::LimitExceeded("file too large"));
     }
@@ -111,6 +112,15 @@ pub fn create_private_dir(path: &Path) -> Result<bool> {
     Ok(!existed)
 }
 
+pub fn create_private_subdir(path: &Path) -> Result<bool> {
+    let created = create_private_dir(path)?;
+    if is_real_directory(path) {
+        Ok(created)
+    } else {
+        Err(refuse_link(path))
+    }
+}
+
 #[must_use]
 pub fn is_real_directory(path: &Path) -> bool {
     path.symlink_metadata()
@@ -120,8 +130,22 @@ pub fn is_real_directory(path: &Path) -> bool {
 fn private_options() -> OpenOptions {
     let mut options = OpenOptions::new();
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let no_follow = i32::try_from(rustix::fs::OFlags::NOFOLLOW.bits()).unwrap_or(0);
+        options.mode(0o600).custom_flags(no_follow);
+    }
     options
+}
+
+fn refuse_link(path: &Path) -> Error {
+    Error::Io {
+        path: path.to_path_buf(),
+        source: io::Error::new(
+            ErrorKind::InvalidInput,
+            "refusing to follow a symbolic link or use a special file",
+        ),
+    }
 }
 
 fn parent_directory(path: &Path) -> &Path {
@@ -200,6 +224,32 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), b"a\nb\n");
         #[cfg(unix)]
         assert_eq!(mode(&path), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symbolic_links_are_never_followed_when_writing() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("victim.txt");
+        fs::write(&target, b"untouched").unwrap();
+        let link = directory.path().join("audit.log");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(append_private(&link, b"injected\n").is_err());
+        assert!(FileLock::acquire(&link, LockMode::Exclusive).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"untouched");
+        assert!(read_bounded(directory.path(), 10).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_subdirectories_are_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let link = directory.path().join("history");
+        std::os::unix::fs::symlink(elsewhere.path(), &link).unwrap();
+        assert!(create_private_subdir(&link).is_err());
+        assert!(create_private_subdir(&directory.path().join("fresh")).unwrap());
+        assert!(!create_private_subdir(&directory.path().join("fresh")).unwrap());
     }
 
     #[test]
