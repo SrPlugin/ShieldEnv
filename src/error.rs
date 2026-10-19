@@ -9,6 +9,8 @@ pub enum Error {
         "not a shieldenv project (or any parent directory); run 'shieldenv init' or use --global"
     )]
     NotAProject,
+    #[error("refusing to use {}: it is not owned by the current user", .0.display())]
+    UnsafeDirectory(PathBuf),
     #[error("no user data directory available on this platform")]
     NoDataDirectory,
     #[error("no vault for environment '{0}'")]
