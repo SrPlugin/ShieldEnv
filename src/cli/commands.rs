@@ -426,7 +426,7 @@ impl Context {
             self.open_reusing(to, Access::Write, &password)?
         } else {
             notice(format!("creating vault for '{to}'"));
-            source.create_sibling(&self.workspace, to, &password)?
+            source.create_sibling(&self.workspace, to, Some(&password), None)?
         };
         let (mut copied, mut skipped) = (0, 0);
         for (key, value) in source.secrets().iter() {
@@ -457,7 +457,7 @@ impl Context {
 
     fn rekey(&self) -> Result<ExitCode> {
         let (mut vault, password) = self.unlock(&self.environment, Access::Write)?;
-        vault.rekey(&password)?;
+        vault.rekey(Some(&password))?;
         notice(format!(
             "rotated the data key of '{}'; earlier recovery shares no longer work, \
              and secrets seen by former members should be changed",

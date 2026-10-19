@@ -3,8 +3,11 @@ use std::path::{Path, PathBuf};
 use secrecy::SecretString;
 use zeroize::Zeroizing;
 
-use crate::crypto::{Envelope, KdfParams, Key, MAX_VAULT_LEN};
-use crate::domain::{Environment, Secrets};
+use crate::crypto::{
+    Envelope, Identity, Inspection, KdfParams, Key, MAX_VAULT_LEN, Member, PublicIdentity, Unlock,
+    inspect,
+};
+use crate::domain::{Environment, MemberName, Secrets};
 use crate::storage::codec;
 use crate::storage::file::{FileLock, LockMode, WriteMode, read_bounded, write_atomic};
 use crate::storage::{History, Workspace};
@@ -42,14 +45,22 @@ impl Vault {
         workspace.vault_path(environment).is_file()
     }
 
-    pub fn open(
+    pub fn inspect(workspace: &Workspace, environment: &Environment) -> Result<Inspection> {
+        let path = workspace.vault_path(environment);
+        let blob = read_bounded(&path, MAX_VAULT_LEN)?
+            .ok_or_else(|| Error::VaultNotFound(environment.to_string()))?;
+        inspect(&blob)
+    }
+
+    pub fn open<'a>(
         workspace: &Workspace,
         environment: &Environment,
-        password: &SecretString,
+        unlock: impl Into<Unlock<'a>>,
         access: Access,
     ) -> Result<Self> {
+        let unlock = unlock.into();
         Self::load(workspace, environment, access, |blob| {
-            Envelope::open(blob, password)
+            Envelope::open(blob, unlock)
         })
     }
 
@@ -76,9 +87,14 @@ impl Vault {
         &self,
         workspace: &Workspace,
         environment: &Environment,
-        password: &SecretString,
+        password: Option<&SecretString>,
+        signer: Option<&Identity>,
     ) -> Result<Self> {
-        Self::initialize(workspace, environment, self.envelope.sibling(password)?)
+        Self::initialize(
+            workspace,
+            environment,
+            self.envelope.sibling(password, signer)?,
+        )
     }
 
     pub fn save(&self) -> Result<()> {
@@ -133,13 +149,66 @@ impl Vault {
         &self.environment
     }
 
-    pub fn rekey(&mut self, password: &SecretString) -> Result<()> {
-        if self.access != Access::Write {
-            return Err(Error::ReadOnly);
-        }
-        self.envelope.rekey(password)?;
+    pub fn rekey(&mut self, password: Option<&SecretString>) -> Result<bool> {
+        self.require_write()?;
+        let dropped_password = self.envelope.rekey(password)?;
         self.save()?;
-        self.history.clear()
+        self.history.clear()?;
+        Ok(dropped_password)
+    }
+
+    pub fn init_admin(&mut self, signer: &Identity, name: MemberName) -> Result<()> {
+        self.require_write()?;
+        self.envelope.init_admin(signer, name)?;
+        self.save()
+    }
+
+    pub fn add_member(
+        &mut self,
+        signer: &Identity,
+        name: MemberName,
+        public: PublicIdentity,
+        admin: bool,
+    ) -> Result<()> {
+        self.require_write()?;
+        self.envelope.add_member(signer, name, public, admin)?;
+        self.save()
+    }
+
+    pub fn remove_member(
+        &mut self,
+        signer: &Identity,
+        name: &MemberName,
+        password: Option<&SecretString>,
+    ) -> Result<bool> {
+        self.require_write()?;
+        let dropped_password = self.envelope.remove_member(signer, name, password)?;
+        self.save()?;
+        self.history.clear()?;
+        Ok(dropped_password)
+    }
+
+    #[must_use]
+    pub fn members(&self) -> Vec<Member> {
+        self.envelope.members()
+    }
+
+    #[must_use]
+    pub fn has_password(&self) -> bool {
+        self.envelope.has_password()
+    }
+
+    #[must_use]
+    pub fn is_admin(&self, identity: &Identity) -> bool {
+        self.envelope.is_admin(identity)
+    }
+
+    fn require_write(&self) -> Result<()> {
+        if self.access == Access::Write {
+            Ok(())
+        } else {
+            Err(Error::ReadOnly)
+        }
     }
 
     #[must_use]
@@ -375,7 +444,7 @@ mod tests {
             .unwrap();
         vault.restore(1).unwrap();
         assert_eq!(vault.secrets().get("B"), Some("2"));
-        vault.rekey(&password("another password!")).unwrap();
+        vault.rekey(Some(&password("another password!"))).unwrap();
         assert!(vault.restore(1).is_err());
     }
 
@@ -402,7 +471,7 @@ mod tests {
         insert(&mut vault, "A", "1");
         vault.save().unwrap();
         let old_key = vault.data_key().clone();
-        vault.rekey(&secret).unwrap();
+        vault.rekey(Some(&secret)).unwrap();
         assert_eq!(vault.generation(), 1);
         drop(vault);
         assert!(matches!(
@@ -432,7 +501,7 @@ mod tests {
         let source = Vault::create(&fixture.workspace, &fixture.environment, &secret).unwrap();
         let staging: Environment = "staging".parse().unwrap();
         let sibling = source
-            .create_sibling(&fixture.workspace, &staging, &secret)
+            .create_sibling(&fixture.workspace, &staging, Some(&secret), None)
             .unwrap();
         assert_ne!(**source.data_key(), **sibling.data_key());
         drop(sibling);

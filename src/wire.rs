@@ -22,6 +22,10 @@ impl<'a> Reader<'a> {
         self.array::<1>().map(|[byte]| byte)
     }
 
+    pub(crate) fn u16(&mut self) -> Result<u16> {
+        self.array().map(u16::from_le_bytes)
+    }
+
     pub(crate) fn u32(&mut self) -> Result<u32> {
         self.array().map(u32::from_le_bytes)
     }
