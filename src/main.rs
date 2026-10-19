@@ -5,6 +5,7 @@ use std::process::ExitCode;
 use clap::Parser;
 
 fn main() -> ExitCode {
+    cli::hardening::harden_process();
     let arguments = cli::args::Cli::parse();
     match cli::commands::execute(arguments) {
         Ok(code) => code,
