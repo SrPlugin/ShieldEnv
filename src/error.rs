@@ -17,6 +17,26 @@ pub enum Error {
     VaultNotFound(String),
     #[error("vault was opened read-only")]
     ReadOnly,
+    #[error("invalid member name {0:?}: use letters, digits and . _ @ + -, up to 64 characters")]
+    InvalidMemberName(String),
+    #[error("your identity is not a member of this vault")]
+    NotAMember,
+    #[error("only administrators can do that")]
+    NotAdmin,
+    #[error("member '{0}' already exists")]
+    MemberExists(String),
+    #[error("member '{0}' not found")]
+    MemberNotFound(String),
+    #[error("this vault already has members; use 'shieldenv member add'")]
+    MembersExist,
+    #[error("a vault must keep at least one administrator")]
+    LastAdmin,
+    #[error("administrators cannot remove themselves; ask another administrator")]
+    RemoveSelf,
+    #[error("this vault cannot be opened with a password; use an identity that is a member")]
+    NoPasswordAccess,
+    #[error("an identity or a password is needed to create a vault")]
+    NoAccess,
     #[error("invalid identity: {0}")]
     InvalidIdentity(&'static str),
     #[error("no identity found; create one with 'shieldenv id new'")]
