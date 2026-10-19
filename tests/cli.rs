@@ -322,11 +322,13 @@ fn export_round_trips_and_protects_files() {
 
 #[cfg(unix)]
 #[test]
-fn run_injects_secrets_without_the_password() {
+fn run_injects_secrets_without_any_credentials() {
     let sandbox = Sandbox::with_secrets(&[("API_KEY", "abc"), ("DB_URL", "db")]);
     sandbox
         .command()
         .env("SHIELDENV_NEW_PASSWORD", "should not leak")
+        .env("SHIELDENV_IDENTITY", "shieldenv-secret1:should-not-leak")
+        .env("SHIELDENV_IDENTITY_PASSPHRASE", "should not leak either")
         .args(["run", "--", "env"])
         .assert()
         .success()
@@ -334,7 +336,9 @@ fn run_injects_secrets_without_the_password() {
             contains("API_KEY=abc")
                 .and(contains("DB_URL=db"))
                 .and(contains("SHIELDENV_PASSWORD").not())
-                .and(contains("SHIELDENV_NEW_PASSWORD").not()),
+                .and(contains("SHIELDENV_NEW_PASSWORD").not())
+                .and(contains("SHIELDENV_IDENTITY").not())
+                .and(contains("should not leak").not()),
         );
 }
 

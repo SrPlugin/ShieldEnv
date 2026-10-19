@@ -22,7 +22,7 @@ use super::context::Context;
 use super::git;
 use super::identity::manage_identity;
 use super::output::{format_date, notice, plural, write_stdout};
-use super::prompt::{self, NEW_PASSWORD_VARIABLE, PASSWORD_VARIABLE};
+use super::prompt::{self, CREDENTIAL_VARIABLES};
 
 const IMPORT_LIMIT: usize = 16 << 20;
 const SHARE_LIMIT: usize = 8 * 1024;
@@ -387,10 +387,10 @@ impl Context {
             .ok_or(Error::InvalidValue("missing command to run"))?;
         let vault = self.open(&self.environment, Access::Read)?;
         let mut command = process::Command::new(&program);
-        command
-            .args(arguments)
-            .env_remove(PASSWORD_VARIABLE)
-            .env_remove(NEW_PASSWORD_VARIABLE);
+        command.args(arguments);
+        for variable in CREDENTIAL_VARIABLES {
+            command.env_remove(variable);
+        }
         let delivered_keys: Vec<&SecretKey> = files.iter().map(|file| &file.key).collect();
         for (key, value) in vault.secrets().iter() {
             let selected = only.is_empty() || only.iter().any(|pattern| pattern.matches(key));
