@@ -31,6 +31,8 @@ pub enum Error {
     InvalidEnvironment(String),
     #[error("invalid pattern {0:?}: use key characters, '*' and '?'")]
     InvalidPattern(String),
+    #[error("source and target environments must differ")]
+    SameEnvironment,
     #[error("key '{0}' not found")]
     KeyNotFound(String),
     #[error("password must be at least {0} characters")]

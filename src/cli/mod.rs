@@ -1,0 +1,16 @@
+pub mod args;
+pub mod commands;
+pub mod prompt;
+
+use std::io::ErrorKind;
+
+use shieldenv::Error;
+
+#[must_use]
+pub fn exit_code(error: &Error) -> u8 {
+    match error {
+        Error::Spawn { source, .. } if source.kind() == ErrorKind::NotFound => 127,
+        Error::Spawn { .. } => 126,
+        _ => 1,
+    }
+}
