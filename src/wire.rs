@@ -26,8 +26,26 @@ impl<'a> Reader<'a> {
         self.array().map(u32::from_le_bytes)
     }
 
+    pub(crate) fn length(&mut self) -> Result<usize> {
+        usize::try_from(self.u32()?).map_err(|_| TRUNCATED)
+    }
+
+    pub(crate) fn slice(&mut self, len: usize) -> Result<&'a [u8]> {
+        let (head, rest) = self.remaining.split_at_checked(len).ok_or(TRUNCATED)?;
+        self.remaining = rest;
+        Ok(head)
+    }
+
     pub(crate) fn rest(self) -> &'a [u8] {
         self.remaining
+    }
+
+    pub(crate) fn finish(self) -> Result<()> {
+        if self.remaining.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Malformed("trailing data"))
+        }
     }
 }
 
@@ -37,17 +55,19 @@ mod tests {
 
     #[test]
     fn reads_fields_in_order() {
-        let bytes = [1, 2, 0, 0, 0, 9, 8];
+        let bytes = [1, 2, 0, 0, 0, 9, 8, 7];
         let mut reader = Reader::new(&bytes);
         assert_eq!(reader.u8().unwrap(), 1);
-        assert_eq!(reader.u32().unwrap(), 2);
-        assert_eq!(reader.array::<1>().unwrap(), [9]);
-        assert_eq!(reader.rest(), [8]);
+        assert_eq!(reader.length().unwrap(), 2);
+        assert_eq!(reader.slice(2).unwrap(), [9, 8]);
+        assert_eq!(reader.array::<1>().unwrap(), [7]);
+        assert!(reader.finish().is_ok());
     }
 
     #[test]
-    fn reports_truncation() {
+    fn reports_truncation_and_trailing_data() {
         assert!(Reader::new(&[1, 2, 3]).u32().is_err());
-        assert!(Reader::new(&[]).u8().is_err());
+        assert!(Reader::new(&[1]).slice(2).is_err());
+        assert!(Reader::new(&[1]).finish().is_err());
     }
 }
