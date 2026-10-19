@@ -97,10 +97,14 @@ impl Context {
                 let prepared = self.audited("run", &[], || self.prepare_run(&only, command))?;
                 launch(prepared)
             }
-            Command::Diff { left, right } => self.diff(&left, &right),
+            Command::Diff { left, right } => {
+                let result = self.diff(&left, &right);
+                self.record(&left, "diff", &[], result.is_ok());
+                result
+            }
             Command::Cp { from, to, force } => self.copy(&from, &to, force),
             Command::Passwd => self.audited("passwd", &[], || self.change_password()),
-            Command::Status => self.status(),
+            Command::Status => self.audited("status", &[], || self.status()),
             Command::Verify => self.audited("verify", &[], || self.verify()),
             Command::Env => self.environments(),
             Command::Shares { action } => match action {
