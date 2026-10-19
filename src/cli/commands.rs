@@ -8,14 +8,15 @@ use clap::CommandFactory;
 use clap_complete::Shell;
 use secrecy::SecretString;
 use shieldenv::app::{Access, Charset, Format, Vault, parse_dotenv, random_secret, render, scan};
-use shieldenv::crypto::{KEY_LEN, Key, shamir};
+use shieldenv::crypto::{Identity, KEY_LEN, Key, identity_file, shamir};
 use shieldenv::domain::{Environment, Pattern, SecretKey, unix_now};
 use shieldenv::storage::file::{WriteMode, create_private_dir, read_bounded, write_atomic};
+use shieldenv::storage::keystore::{self, Sources};
 use shieldenv::storage::{AuditLog, History, Scope, Workspace};
 use shieldenv::{Error, Result};
 use zeroize::Zeroizing;
 
-use super::args::{Cli, Command, SharesCommand};
+use super::args::{Cli, Command, IdCommand, SharesCommand};
 use super::prompt::{self, NEW_PASSWORD_VARIABLE, PASSWORD_VARIABLE, Prompter};
 
 const IMPORT_LIMIT: usize = 16 << 20;
@@ -40,6 +41,7 @@ pub fn execute(cli: Cli) -> Result<ExitCode> {
         Command::Init => init(scope, &working_directory),
         Command::Completions { shell } => completions(shell),
         Command::Scan { path } => scan_for_secrets(&path),
+        Command::Id { action } => manage_identity(action),
         command => Context {
             workspace: Workspace::locate(scope, &working_directory)?,
             environment,
@@ -58,6 +60,46 @@ fn init(scope: Scope, working_directory: &Path) -> Result<ExitCode> {
         ));
     } else {
         notice(format!("shieldenv directory already exists in {directory}"));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn manage_identity(action: IdCommand) -> Result<ExitCode> {
+    match action {
+        IdCommand::New {
+            file,
+            no_passphrase,
+        } => {
+            let path = file
+                .or_else(keystore::default_path)
+                .ok_or(Error::NoDataDirectory)?;
+            if path.exists() {
+                return Err(Error::AlreadyExists(path));
+            }
+            let identity = Identity::generate()?;
+            let contents = if no_passphrase {
+                let mut text = identity.secret_text();
+                text.push('\n');
+                Zeroizing::new(text.as_bytes().to_vec())
+            } else {
+                let passphrase = Prompter::from_environment().new_identity_passphrase()?;
+                Zeroizing::new(identity_file::seal(&identity, &passphrase)?)
+            };
+            keystore::create(&path, &contents)?;
+            let public = identity.public();
+            notice(format!(
+                "identity saved to {} (fingerprint {}); give the line below to an administrator",
+                path.display(),
+                public.fingerprint()
+            ));
+            write_stdout(format!("{public}\n").as_bytes())?;
+        }
+        IdCommand::Show => {
+            let located =
+                keystore::locate(&Sources::from_environment())?.ok_or(Error::NoIdentity)?;
+            notice(format!("fingerprint {}", located.public().fingerprint()));
+            write_stdout(format!("{}\n", located.public()).as_bytes())?;
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -167,9 +209,10 @@ impl Context {
                 }
             },
             Command::Log { count } => self.log(count),
-            Command::Init | Command::Completions { .. } | Command::Scan { .. } => {
-                Ok(ExitCode::SUCCESS)
-            }
+            Command::Init
+            | Command::Completions { .. }
+            | Command::Scan { .. }
+            | Command::Id { .. } => Ok(ExitCode::SUCCESS),
         }
     }
 

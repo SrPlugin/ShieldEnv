@@ -60,7 +60,11 @@ impl Sandbox {
             .env("XDG_DATA_HOME", self.home().join("data"))
             .env("SHIELDENV_PASSWORD", PASSWORD)
             .env_remove("SHIELDENV_NEW_PASSWORD")
-            .env_remove("SHIELDENV_ENV");
+            .env_remove("SHIELDENV_ENV")
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("SHIELDENV_IDENTITY")
+            .env_remove("SHIELDENV_IDENTITY_FILE")
+            .env_remove("SHIELDENV_IDENTITY_PASSPHRASE");
         command
     }
 
@@ -588,4 +592,82 @@ fn rekey_discards_history() {
     assert!(!sandbox.stdout(&["history"]).is_empty());
     sandbox.run(&["rekey"]).success();
     assert_eq!(sandbox.stdout(&["history"]), "");
+}
+
+#[test]
+fn identities_are_created_protected_and_shown() {
+    let sandbox = Sandbox::new();
+    let created = sandbox
+        .command()
+        .env("SHIELDENV_IDENTITY_PASSPHRASE", "identity passphrase")
+        .args(["id", "new"])
+        .assert()
+        .success()
+        .stderr(contains("fingerprint"))
+        .get_output()
+        .stdout
+        .clone();
+    let public = String::from_utf8(created).unwrap();
+    assert!(public.starts_with("shieldenv-public1:age1"));
+    let path = sandbox.home().join(".config/shieldenv/identity");
+    let stored = fs::read(&path).unwrap();
+    assert!(stored.starts_with(b"SHID"));
+    #[cfg(unix)]
+    assert_eq!(mode(&path), 0o600);
+    assert_eq!(sandbox.stdout(&["id", "show"]), public);
+    sandbox
+        .command()
+        .env("SHIELDENV_IDENTITY_PASSPHRASE", "identity passphrase")
+        .args(["id", "new"])
+        .assert()
+        .code(1)
+        .stderr(contains("already exists"));
+}
+
+#[test]
+fn identity_passphrases_must_be_strong_and_plain_files_are_for_ci() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .command()
+        .env("SHIELDENV_IDENTITY_PASSPHRASE", "short")
+        .args(["id", "new"])
+        .assert()
+        .code(1)
+        .stderr(contains("at least 12 characters"));
+    assert!(!sandbox.home().join(".config/shieldenv/identity").exists());
+    let ci_file = sandbox.root.path().join("ci.key");
+    let created = sandbox
+        .command()
+        .args(["id", "new", "--no-passphrase", "--file"])
+        .arg(&ci_file)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(
+        fs::read_to_string(&ci_file)
+            .unwrap()
+            .starts_with("shieldenv-secret1:AGE-SECRET-KEY-1")
+    );
+    #[cfg(unix)]
+    assert_eq!(mode(&ci_file), 0o600);
+    let shown = sandbox
+        .command()
+        .env("SHIELDENV_IDENTITY_FILE", &ci_file)
+        .args(["id", "show"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(shown, created);
+}
+
+#[test]
+fn id_show_without_an_identity_explains_what_to_do() {
+    Sandbox::new()
+        .run(&["id", "show"])
+        .code(1)
+        .stderr(contains("shieldenv id new"));
 }

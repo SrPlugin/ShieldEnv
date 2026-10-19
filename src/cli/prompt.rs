@@ -7,6 +7,7 @@ use zeroize::Zeroizing;
 
 pub const PASSWORD_VARIABLE: &str = "SHIELDENV_PASSWORD";
 pub const NEW_PASSWORD_VARIABLE: &str = "SHIELDENV_NEW_PASSWORD";
+pub const IDENTITY_PASSPHRASE_VARIABLE: &str = "SHIELDENV_IDENTITY_PASSPHRASE";
 
 const MIN_PASSWORD_LEN: usize = 12;
 const INTERACTIVE_ATTEMPTS: usize = 3;
@@ -15,6 +16,7 @@ const INTERACTIVE_ATTEMPTS: usize = 3;
 pub struct Prompter {
     password: Option<SecretString>,
     new_password: Option<SecretString>,
+    identity_passphrase: Option<SecretString>,
 }
 
 impl Prompter {
@@ -22,6 +24,7 @@ impl Prompter {
         Self {
             password: variable(PASSWORD_VARIABLE),
             new_password: variable(NEW_PASSWORD_VARIABLE),
+            identity_passphrase: variable(IDENTITY_PASSPHRASE_VARIABLE),
         }
     }
 
@@ -50,6 +53,13 @@ impl Prompter {
         match &self.password {
             Some(password) => validated(password.clone()),
             None => confirmed(environment),
+        }
+    }
+
+    pub fn new_identity_passphrase(&self) -> Result<SecretString> {
+        match &self.identity_passphrase {
+            Some(passphrase) => validated(passphrase.clone()),
+            None => confirmed_with("New identity passphrase: "),
         }
     }
 
@@ -100,7 +110,11 @@ fn ask(prompt: &str) -> Result<SecretString> {
 }
 
 fn confirmed(environment: &Environment) -> Result<SecretString> {
-    let password = validated(ask(&format!("New password for '{environment}': "))?)?;
+    confirmed_with(&format!("New password for '{environment}': "))
+}
+
+fn confirmed_with(prompt: &str) -> Result<SecretString> {
+    let password = validated(ask(prompt)?)?;
     let confirmation = ask("Confirm password: ")?;
     if password.expose_secret() == confirmation.expose_secret() {
         Ok(password)
@@ -125,6 +139,7 @@ mod tests {
         Prompter {
             password: password.map(|text| SecretString::from(text.to_owned())),
             new_password: new_password.map(|text| SecretString::from(text.to_owned())),
+            identity_passphrase: None,
         }
     }
 

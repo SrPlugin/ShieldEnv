@@ -181,8 +181,31 @@ pub enum Command {
         path: PathBuf,
     },
 
+    #[command(about = "Manage your personal identity")]
+    Id {
+        #[command(subcommand)]
+        action: IdCommand,
+    },
+
     #[command(about = "Print a shell completion script")]
     Completions { shell: Shell },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum IdCommand {
+    #[command(about = "Create an identity and print its public part")]
+    New {
+        #[arg(long, value_name = "FILE", help = "Where to store the identity")]
+        file: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Store the identity unencrypted, for CI systems that keep it as a secret"
+        )]
+        no_passphrase: bool,
+    },
+
+    #[command(about = "Print the public part of your identity")]
+    Show,
 }
 
 #[derive(Debug, Subcommand)]
