@@ -1,5 +1,6 @@
 mod envelope;
 mod kdf;
+pub mod shamir;
 
 pub use envelope::{Envelope, FORMAT_VERSION, HEADER_LEN, MAX_VAULT_LEN};
 pub use kdf::{KEY_LEN, KdfParams, Key, derive};
