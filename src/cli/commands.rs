@@ -87,6 +87,11 @@ impl Context {
             } => self.audited("gen", &[key.as_str()], || {
                 self.generate(&key, usize::from(length), charset.into(), force)
             }),
+            Command::Mv { old, new, force } => {
+                self.audited("mv", &[old.as_str(), new.as_str()], || {
+                    self.rename(&old, &new, force)
+                })
+            }
             Command::Get { key } => self.audited("get", &[key.as_str()], || self.get(&key)),
             Command::Rm { keys } => {
                 let names: Vec<&str> = keys.iter().map(SecretKey::as_str).collect();
@@ -163,6 +168,24 @@ impl Context {
             "generated {key} ({length} characters) in '{}'",
             self.environment
         ));
+        Ok(ExitCode::SUCCESS)
+    }
+
+    fn rename(&self, old: &SecretKey, new: &SecretKey, force: bool) -> Result<ExitCode> {
+        if old == new {
+            return Err(Error::InvalidValue("source and target keys are identical"));
+        }
+        let mut vault = self.open(&self.environment, Access::Write)?;
+        if vault.secrets().contains(new.as_str()) && !force {
+            return Err(Error::KeyExists(new.to_string()));
+        }
+        let value = vault
+            .secrets_mut()
+            .remove(old.as_str())
+            .ok_or_else(|| Error::KeyNotFound(old.to_string()))?;
+        vault.secrets_mut().insert(new.clone(), value)?;
+        vault.save()?;
+        notice(format!("renamed {old} to {new} in '{}'", self.environment));
         Ok(ExitCode::SUCCESS)
     }
 

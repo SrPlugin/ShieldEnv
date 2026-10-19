@@ -64,6 +64,14 @@ pub enum Command {
         force: bool,
     },
 
+    #[command(about = "Rename a secret without exposing its value")]
+    Mv {
+        old: SecretKey,
+        new: SecretKey,
+        #[arg(long, help = "Replace the new key if it already exists")]
+        force: bool,
+    },
+
     #[command(about = "Print a secret value")]
     Get { key: SecretKey },
 

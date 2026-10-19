@@ -146,6 +146,26 @@ fn gen_stores_random_secrets_without_printing_them() {
 }
 
 #[test]
+fn mv_renames_keys_and_protects_existing_ones() {
+    let sandbox = Sandbox::with_secrets(&[("OLD_NAME", "secret"), ("TAKEN", "other")]);
+    sandbox.run(&["mv", "OLD_NAME", "NEW_NAME"]).success();
+    assert_eq!(sandbox.stdout(&["ls"]), "NEW_NAME\nTAKEN\n");
+    assert_eq!(sandbox.stdout(&["get", "NEW_NAME"]), "secret\n");
+    sandbox
+        .run(&["mv", "NEW_NAME", "TAKEN"])
+        .code(1)
+        .stderr(contains("already exists"));
+    assert_eq!(sandbox.stdout(&["get", "TAKEN"]), "other\n");
+    sandbox
+        .run(&["mv", "NEW_NAME", "TAKEN", "--force"])
+        .success();
+    assert_eq!(sandbox.stdout(&["ls"]), "TAKEN\n");
+    assert_eq!(sandbox.stdout(&["get", "TAKEN"]), "secret\n");
+    sandbox.run(&["mv", "MISSING", "ANY"]).code(1);
+    sandbox.run(&["mv", "TAKEN", "TAKEN"]).code(1);
+}
+
+#[test]
 fn set_reads_value_from_stdin() {
     let sandbox = Sandbox::initialized();
     sandbox
