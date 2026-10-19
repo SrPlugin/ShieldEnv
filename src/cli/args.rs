@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
-use shieldenv::app::Format;
+use shieldenv::app::{Charset, Format};
 use shieldenv::domain::{Environment, Pattern, SecretKey};
 
 #[derive(Debug, Parser)]
@@ -46,6 +46,22 @@ pub enum Command {
     Set {
         key: SecretKey,
         value: Option<String>,
+    },
+
+    #[command(about = "Generate a random secret directly into the vault without printing it")]
+    Gen {
+        key: SecretKey,
+        #[arg(
+            short,
+            long,
+            default_value_t = 32,
+            value_parser = clap::value_parser!(u16).range(8..=1024)
+        )]
+        length: u16,
+        #[arg(short, long, value_enum, default_value_t = GenCharset::Alphanumeric)]
+        charset: GenCharset,
+        #[arg(long, help = "Replace the key if it already exists")]
+        force: bool,
     },
 
     #[command(about = "Print a secret value")]
@@ -156,6 +172,23 @@ pub enum SharesCommand {
         #[arg(required = true, num_args = 2.., value_name = "FILE")]
         files: Vec<PathBuf>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum GenCharset {
+    Alphanumeric,
+    Hex,
+    Base64url,
+}
+
+impl From<GenCharset> for Charset {
+    fn from(charset: GenCharset) -> Self {
+        match charset {
+            GenCharset::Alphanumeric => Self::Alphanumeric,
+            GenCharset::Hex => Self::Hex,
+            GenCharset::Base64url => Self::Base64Url,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

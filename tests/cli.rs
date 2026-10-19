@@ -125,6 +125,27 @@ fn set_get_list_and_remove() {
 }
 
 #[test]
+fn gen_stores_random_secrets_without_printing_them() {
+    let sandbox = Sandbox::initialized();
+    sandbox
+        .run(&["gen", "JWT_SECRET", "-l", "48", "-c", "hex"])
+        .success()
+        .stdout("");
+    let value = sandbox.stdout(&["get", "JWT_SECRET"]);
+    let value = value.trim_end();
+    assert_eq!(value.len(), 48);
+    assert!(value.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    sandbox
+        .run(&["gen", "JWT_SECRET"])
+        .code(1)
+        .stderr(contains("already exists"));
+    sandbox.run(&["gen", "JWT_SECRET", "--force"]).success();
+    assert_ne!(sandbox.stdout(&["get", "JWT_SECRET"]).trim_end(), value);
+    sandbox.run(&["gen", "SHORT", "-l", "4"]).code(2);
+    assert_eq!(sandbox.stdout(&["get", "JWT_SECRET"]).trim_end().len(), 32);
+}
+
+#[test]
 fn set_reads_value_from_stdin() {
     let sandbox = Sandbox::initialized();
     sandbox

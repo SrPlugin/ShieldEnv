@@ -33,6 +33,8 @@ pub enum Error {
     InvalidPattern(String),
     #[error("source and target environments must differ")]
     SameEnvironment,
+    #[error("key '{0}' already exists; use --force to replace it")]
+    KeyExists(String),
     #[error("key '{0}' not found")]
     KeyNotFound(String),
     #[error("password must be at least {0} characters")]

@@ -7,7 +7,7 @@ use std::process::{self, ExitCode};
 use clap::CommandFactory;
 use clap_complete::Shell;
 use secrecy::SecretString;
-use shieldenv::app::{Access, Format, Vault, parse_dotenv, render};
+use shieldenv::app::{Access, Charset, Format, Vault, parse_dotenv, random_secret, render};
 use shieldenv::crypto::{KEY_LEN, Key, shamir};
 use shieldenv::domain::{Environment, Pattern, SecretKey};
 use shieldenv::storage::file::{WriteMode, create_private_dir, read_bounded, write_atomic};
@@ -79,6 +79,14 @@ impl Context {
             Command::Set { key, value } => {
                 self.audited("set", &[key.as_str()], || self.set(&key, value))
             }
+            Command::Gen {
+                key,
+                length,
+                charset,
+                force,
+            } => self.audited("gen", &[key.as_str()], || {
+                self.generate(&key, usize::from(length), charset.into(), force)
+            }),
             Command::Get { key } => self.audited("get", &[key.as_str()], || self.get(&key)),
             Command::Rm { keys } => {
                 let names: Vec<&str> = keys.iter().map(SecretKey::as_str).collect();
@@ -134,6 +142,27 @@ impl Context {
         vault.save()?;
         let verb = if replaced { "updated" } else { "added" };
         notice(format!("{verb} {key} in '{}'", self.environment));
+        Ok(ExitCode::SUCCESS)
+    }
+
+    fn generate(
+        &self,
+        key: &SecretKey,
+        length: usize,
+        charset: Charset,
+        force: bool,
+    ) -> Result<ExitCode> {
+        let value = random_secret(charset, length)?;
+        let mut vault = self.open_or_create(&self.environment)?;
+        if vault.secrets().contains(key.as_str()) && !force {
+            return Err(Error::KeyExists(key.to_string()));
+        }
+        vault.secrets_mut().insert(key.clone(), value)?;
+        vault.save()?;
+        notice(format!(
+            "generated {key} ({length} characters) in '{}'",
+            self.environment
+        ));
         Ok(ExitCode::SUCCESS)
     }
 
