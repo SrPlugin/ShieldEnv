@@ -30,7 +30,7 @@ impl Prompter {
 
     pub fn unlock<T>(
         &self,
-        environment: &Environment,
+        label: &str,
         mut attempt: impl FnMut(&SecretString) -> Result<T>,
     ) -> Result<(T, SecretString)> {
         if let Some(password) = &self.password {
@@ -38,7 +38,7 @@ impl Prompter {
         }
         let mut remaining = INTERACTIVE_ATTEMPTS;
         loop {
-            let password = ask(&format!("Password for '{environment}': "))?;
+            let password = ask(&format!("Password for '{label}': "))?;
             match attempt(&password) {
                 Err(Error::Authentication) if remaining > 1 => {
                     remaining -= 1;
@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn non_interactive_unlock_tries_once() {
         let mut calls = 0;
-        let result = prompter(Some("any password"), None).unlock(&Environment::default(), |_| {
+        let result = prompter(Some("any password"), None).unlock("dev", |_| {
             calls += 1;
             Err::<(), _>(Error::Authentication)
         });

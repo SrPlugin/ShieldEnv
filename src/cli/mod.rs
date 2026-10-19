@@ -1,4 +1,5 @@
 pub mod args;
+mod auth;
 pub mod commands;
 mod context;
 pub mod hardening;

@@ -471,7 +471,7 @@ impl Context {
 
     fn change_password(&self) -> Result<ExitCode> {
         let mut vault = self.open(&self.environment, Access::Write)?;
-        let password = self.prompter.replacement_password(&self.environment)?;
+        let password = self.prompter().replacement_password(&self.environment)?;
         vault.change_password(&password)?;
         notice(format!("password changed for '{}'", self.environment));
         Ok(ExitCode::SUCCESS)
@@ -644,7 +644,7 @@ impl Context {
                     Error::Authentication => Error::Shares("shares do not unlock this vault"),
                     other => other,
                 })?;
-        let password = self.prompter.replacement_password(&self.environment)?;
+        let password = self.prompter().replacement_password(&self.environment)?;
         vault.change_password(&password)?;
         notice(format!(
             "access to '{}' recovered with a new password",
