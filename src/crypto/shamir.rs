@@ -2,7 +2,7 @@ use std::fmt;
 
 use zeroize::Zeroizing;
 
-use super::fill_random;
+use super::{fill_random, hex};
 use crate::{Error, Result};
 
 const PREFIX: &str = "shieldenv-share";
@@ -39,13 +39,13 @@ impl Share {
         text.push(':');
         push_decimal(&mut text, SHARE_VERSION);
         text.push(':');
-        push_hex(&mut text, &self.set_id);
+        hex::push(&mut text, &self.set_id);
         text.push(':');
         push_decimal(&mut text, self.threshold);
         text.push(':');
         push_decimal(&mut text, self.index);
         text.push(':');
-        push_hex(&mut text, &self.data);
+        hex::push(&mut text, &self.data);
         text
     }
 
@@ -74,7 +74,7 @@ impl Share {
         if version.parse::<u8>() != Ok(SHARE_VERSION) {
             return Err(Error::Shares("unsupported share version"));
         }
-        let set_id = decode_hex(set_id)
+        let set_id = hex::decode(set_id)
             .and_then(|bytes| <[u8; SET_ID_LEN]>::try_from(bytes.as_slice()).ok())
             .ok_or(Error::Shares("invalid share set id"))?;
         let threshold = threshold
@@ -87,7 +87,7 @@ impl Share {
             .ok()
             .filter(|&value| value > 0)
             .ok_or(Error::Shares("invalid share index"))?;
-        let data = decode_hex(payload)
+        let data = hex::decode(payload)
             .filter(|bytes| !bytes.is_empty() && bytes.len() <= MAX_SECRET_LEN)
             .ok_or(Error::Shares("invalid share payload"))?;
         Ok(Self {
@@ -223,38 +223,6 @@ fn push_decimal(text: &mut String, value: u8) {
         text.push(char::from(b'0' + tens));
     }
     text.push(char::from(b'0' + value % 10));
-}
-
-fn push_hex(text: &mut String, bytes: &[u8]) {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    for byte in bytes {
-        for nibble in [byte >> 4, byte & 0x0F] {
-            if let Some(&digit) = DIGITS.get(usize::from(nibble)) {
-                text.push(char::from(digit));
-            }
-        }
-    }
-}
-
-fn decode_hex(text: &str) -> Option<Zeroizing<Vec<u8>>> {
-    if !text.len().is_multiple_of(2) {
-        return None;
-    }
-    let mut bytes = Zeroizing::new(Vec::with_capacity(text.len() / 2));
-    for pair in text.as_bytes().chunks_exact(2) {
-        let [high, low] = pair else { return None };
-        bytes.push(hex_value(*high)? << 4 | hex_value(*low)?);
-    }
-    Some(bytes)
-}
-
-fn hex_value(digit: u8) -> Option<u8> {
-    match digit {
-        b'0'..=b'9' => Some(digit - b'0'),
-        b'a'..=b'f' => Some(digit - b'a' + 10),
-        b'A'..=b'F' => Some(digit - b'A' + 10),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

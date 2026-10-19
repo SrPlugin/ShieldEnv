@@ -1,4 +1,5 @@
 mod envelope;
+mod hex;
 mod kdf;
 pub mod shamir;
 
