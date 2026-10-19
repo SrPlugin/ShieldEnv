@@ -17,6 +17,8 @@ pub enum Error {
     VaultNotFound(String),
     #[error("vault was opened read-only")]
     ReadOnly,
+    #[error("invalid identity: {0}")]
+    InvalidIdentity(&'static str),
     #[error("wrong password or tampered vault")]
     Authentication,
     #[error("malformed vault: {0}")]

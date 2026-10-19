@@ -12,6 +12,12 @@ pub fn push(text: &mut String, bytes: &[u8]) {
     }
 }
 
+pub fn encode(bytes: &[u8]) -> String {
+    let mut text = String::with_capacity(bytes.len() * 2);
+    push(&mut text, bytes);
+    text
+}
+
 pub fn decode(text: &str) -> Option<Zeroizing<Vec<u8>>> {
     if !text.len().is_multiple_of(2) {
         return None;
@@ -40,8 +46,7 @@ mod tests {
     #[test]
     fn round_trips_all_byte_values() {
         let bytes: Vec<u8> = (0..=255).collect();
-        let mut text = String::new();
-        push(&mut text, &bytes);
+        let text = encode(&bytes);
         assert_eq!(text.len(), 512);
         assert_eq!(decode(&text).unwrap().as_slice(), bytes.as_slice());
         assert_eq!(
