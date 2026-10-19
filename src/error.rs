@@ -15,6 +15,8 @@ pub enum Error {
     NoDataDirectory,
     #[error("no vault for environment '{0}'")]
     VaultNotFound(String),
+    #[error("vault was opened read-only")]
+    ReadOnly,
     #[error("wrong password or tampered vault")]
     Authentication,
     #[error("malformed vault: {0}")]
