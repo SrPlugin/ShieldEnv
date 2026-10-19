@@ -2,6 +2,7 @@ pub mod audit;
 pub mod codec;
 pub mod file;
 pub mod history;
+pub mod keystore;
 pub mod workspace;
 
 pub use audit::{AuditEntry, AuditLog};
