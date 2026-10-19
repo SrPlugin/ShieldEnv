@@ -1,21 +1,23 @@
 use zeroize::Zeroizing;
 
-use crate::domain::{SecretKey, Secrets};
+use crate::domain::{SecretKey, SecretMeta, Secrets};
 use crate::wire::Reader;
 use crate::{Error, Result};
 
 pub fn encode(secrets: &Secrets) -> Result<Zeroizing<Vec<u8>>> {
     let capacity = 4 + secrets
         .iter()
-        .map(|(key, value)| 8 + key.as_str().len() + value.len())
+        .map(|(key, value)| 24 + key.as_str().len() + value.len())
         .sum::<usize>();
     let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));
     bytes.extend_from_slice(&length_prefix(secrets.len())?);
-    for (key, value) in secrets.iter() {
+    for (key, value, meta) in secrets.iter_with_meta() {
         bytes.extend_from_slice(&length_prefix(key.as_str().len())?);
         bytes.extend_from_slice(key.as_str().as_bytes());
         bytes.extend_from_slice(&length_prefix(value.len())?);
         bytes.extend_from_slice(value.as_bytes());
+        bytes.extend_from_slice(&meta.created.to_le_bytes());
+        bytes.extend_from_slice(&meta.updated.to_le_bytes());
     }
     Ok(bytes)
 }
@@ -39,8 +41,12 @@ pub fn decode(bytes: &[u8]) -> Result<Secrets> {
         }
         let value = std::str::from_utf8(reader.slice(value_len)?)
             .map_err(|_| Error::Malformed("value is not UTF-8"))?;
+        let meta = SecretMeta {
+            created: reader.u64()?,
+            updated: reader.u64()?,
+        };
         secrets
-            .insert(key.clone(), Zeroizing::new(value.to_owned()))
+            .restore(key.clone(), Zeroizing::new(value.to_owned()), meta)
             .map_err(|_| Error::Malformed("invalid value"))?;
         previous = Some(key);
     }
@@ -74,16 +80,20 @@ mod tests {
         let mut secrets = Secrets::new();
         for (key, value) in entries {
             secrets
-                .insert(key.parse().unwrap(), Zeroizing::new((*value).to_owned()))
+                .insert_at(
+                    key.parse().unwrap(),
+                    Zeroizing::new((*value).to_owned()),
+                    1_000,
+                )
                 .unwrap();
         }
         secrets
     }
 
-    fn entries(secrets: &Secrets) -> Vec<(String, String)> {
+    fn entries(secrets: &Secrets) -> Vec<(String, String, SecretMeta)> {
         secrets
-            .iter()
-            .map(|(key, value)| (key.to_string(), value.to_owned()))
+            .iter_with_meta()
+            .map(|(key, value, meta)| (key.to_string(), value.to_owned(), meta))
             .collect()
     }
 
@@ -94,6 +104,7 @@ mod tests {
             bytes.extend_from_slice(key);
             bytes.extend_from_slice(&u32::try_from(value.len()).unwrap().to_le_bytes());
             bytes.extend_from_slice(value);
+            bytes.extend_from_slice(&[0; 16]);
         }
         bytes
     }
@@ -104,6 +115,25 @@ mod tests {
         let encoded = encode(&original).unwrap();
         assert_eq!(encoded.len(), encoded.capacity());
         assert_eq!(entries(&decode(&encoded).unwrap()), entries(&original));
+    }
+
+    #[test]
+    fn timestamps_survive_a_round_trip() {
+        let mut original = Secrets::new();
+        original
+            .insert_at("A".parse().unwrap(), Zeroizing::new("1".to_owned()), 10)
+            .unwrap();
+        original
+            .insert_at("A".parse().unwrap(), Zeroizing::new("2".to_owned()), 99)
+            .unwrap();
+        let decoded = decode(&encode(&original).unwrap()).unwrap();
+        assert_eq!(
+            decoded.meta("A"),
+            Some(SecretMeta {
+                created: 10,
+                updated: 99
+            })
+        );
     }
 
     #[test]
@@ -141,7 +171,7 @@ mod tests {
         ) {
             let mut original = Secrets::new();
             for (key, value) in &map {
-                original.insert(key.parse().unwrap(), Zeroizing::new(value.clone())).unwrap();
+                original.insert_at(key.parse().unwrap(), Zeroizing::new(value.clone()), 5).unwrap();
             }
             let decoded = decode(&encode(&original).unwrap()).unwrap();
             prop_assert_eq!(entries(&decoded), entries(&original));

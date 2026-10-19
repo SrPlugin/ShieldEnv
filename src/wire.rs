@@ -26,6 +26,10 @@ impl<'a> Reader<'a> {
         self.array().map(u32::from_le_bytes)
     }
 
+    pub(crate) fn u64(&mut self) -> Result<u64> {
+        self.array().map(u64::from_le_bytes)
+    }
+
     pub(crate) fn length(&mut self) -> Result<usize> {
         usize::try_from(self.u32()?).map_err(|_| TRUNCATED)
     }

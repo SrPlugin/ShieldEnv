@@ -6,4 +6,4 @@ mod secrets;
 pub use environment::Environment;
 pub use key::SecretKey;
 pub use pattern::Pattern;
-pub use secrets::{SecretValue, Secrets};
+pub use secrets::{SecretMeta, SecretValue, Secrets, unix_now};

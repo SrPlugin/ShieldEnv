@@ -209,11 +209,7 @@ impl Context {
         if vault.secrets().contains(new.as_str()) && !force {
             return Err(Error::KeyExists(new.to_string()));
         }
-        let value = vault
-            .secrets_mut()
-            .remove(old.as_str())
-            .ok_or_else(|| Error::KeyNotFound(old.to_string()))?;
-        vault.secrets_mut().insert(new.clone(), value)?;
+        vault.secrets_mut().rename(old.as_str(), new.clone())?;
         vault.save()?;
         notice(format!("renamed {old} to {new} in '{}'", self.environment));
         Ok(ExitCode::SUCCESS)
