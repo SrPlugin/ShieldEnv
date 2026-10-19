@@ -377,6 +377,13 @@ impl<'a> Parsed<'a> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessSummary {
+    generation: u32,
+    members: Vec<Member>,
+    password: Option<Vec<u8>>,
+}
+
 pub fn inspect(blob: &[u8]) -> Result<Inspection> {
     let parsed = Parsed::from_bytes(blob)?;
     Ok(Inspection {
@@ -667,6 +674,19 @@ impl Envelope {
                 Ok(index)
             }
             Some(_) => Err(Error::NotAdmin),
+        }
+    }
+
+    #[must_use]
+    pub fn access_summary(&self) -> AccessSummary {
+        AccessSummary {
+            generation: self.generation,
+            members: self.members(),
+            password: self.password.as_ref().map(|slot| {
+                let mut bytes = Vec::new();
+                slot.encode(&mut bytes);
+                bytes
+            }),
         }
     }
 

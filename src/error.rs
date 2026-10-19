@@ -17,6 +17,8 @@ pub enum Error {
     VaultNotFound(String),
     #[error("vault was opened read-only")]
     ReadOnly,
+    #[error("merge conflict: {0}")]
+    MergeConflict(String),
     #[error("invalid member name {0:?}: use letters, digits and . _ @ + -, up to 64 characters")]
     InvalidMemberName(String),
     #[error("your identity is not a member of this vault")]
