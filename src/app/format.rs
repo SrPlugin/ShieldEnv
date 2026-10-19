@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use zeroize::Zeroizing;
 
@@ -10,6 +11,7 @@ pub enum Format {
     #[default]
     Env,
     Json,
+    Docker,
 }
 
 #[derive(Debug, Default)]
@@ -22,7 +24,36 @@ pub fn render(secrets: &Secrets, format: Format) -> Result<Zeroizing<Vec<u8>>> {
     match format {
         Format::Env => Ok(Zeroizing::new(render_env(secrets).as_bytes().to_vec())),
         Format::Json => render_json(secrets),
+        Format::Docker => render_docker(secrets),
     }
+}
+
+pub fn render_kubernetes(
+    secrets: &Secrets,
+    name: &str,
+    namespace: Option<&str>,
+) -> Result<Zeroizing<Vec<u8>>> {
+    validate_kubernetes_name(name)?;
+    if let Some(namespace) = namespace {
+        validate_kubernetes_name(namespace)?;
+    }
+    let mut manifest = Zeroizing::new(String::new());
+    manifest.push_str("apiVersion: v1\nkind: Secret\nmetadata:\n");
+    let _ = writeln!(manifest, "  name: {name}");
+    if let Some(namespace) = namespace {
+        let _ = writeln!(manifest, "  namespace: {namespace}");
+    }
+    manifest.push_str("type: Opaque\n");
+    if secrets.is_empty() {
+        manifest.push_str("data: {}\n");
+    } else {
+        manifest.push_str("data:\n");
+        for (key, value) in secrets.iter() {
+            let encoded = base64(value.as_bytes());
+            let _ = writeln!(manifest, "  {key}: {}", encoded.as_str());
+        }
+    }
+    Ok(Zeroizing::new(manifest.as_bytes().to_vec()))
 }
 
 #[must_use]
@@ -73,6 +104,59 @@ fn render_env(secrets: &Secrets) -> Zeroizing<String> {
             output.push('\'');
         }
         output.push('\n');
+    }
+    output
+}
+
+fn render_docker(secrets: &Secrets) -> Result<Zeroizing<Vec<u8>>> {
+    let mut output = Zeroizing::new(String::new());
+    for (key, value) in secrets.iter() {
+        if value.contains(['\n', '\r']) {
+            return Err(Error::InvalidValue(
+                "a value contains line breaks, which Docker env files cannot hold",
+            ));
+        }
+        let _ = writeln!(output, "{key}={value}");
+    }
+    Ok(Zeroizing::new(output.as_bytes().to_vec()))
+}
+
+fn validate_kubernetes_name(name: &str) -> Result<()> {
+    let edge =
+        |byte: Option<&u8>| byte.is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+    let valid = !name.is_empty()
+        && name.len() <= 253
+        && edge(name.as_bytes().first())
+        && edge(name.as_bytes().last())
+        && name.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'.')
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(Error::InvalidValue(
+            "Kubernetes names use lowercase letters, digits, '-' and '.'",
+        ))
+    }
+}
+
+fn base64(bytes: &[u8]) -> Zeroizing<String> {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = Zeroizing::new(String::with_capacity(bytes.len().div_ceil(3) * 4));
+    for chunk in bytes.chunks(3) {
+        let mut group = [0_u8; 3];
+        for (slot, byte) in group.iter_mut().zip(chunk) {
+            *slot = *byte;
+        }
+        let bits = u32::from(group[0]) << 16 | u32::from(group[1]) << 8 | u32::from(group[2]);
+        for position in 0..4 {
+            if position <= chunk.len() {
+                let index = usize::try_from(bits >> (18 - 6 * position) & 0x3F).unwrap_or(0);
+                output.push(char::from(ALPHABET.get(index).copied().unwrap_or(b'A')));
+            } else {
+                output.push('=');
+            }
+        }
     }
     output
 }
@@ -278,6 +362,57 @@ URL=postgres://user:p=ss@host/db
             text(&rendered),
             "A='plain $HOME \"x\"'\nB=\"it's\\nmultiline\\\\\"\nC=''\n"
         );
+    }
+
+    #[test]
+    fn docker_env_files_are_literal_and_reject_line_breaks() {
+        let rendered = render(
+            &secrets(&[("B", "it's \"x\" $HOME"), ("A", "1")]),
+            Format::Docker,
+        )
+        .unwrap();
+        assert_eq!(text(&rendered), "A=1\nB=it's \"x\" $HOME\n");
+        assert!(render(&secrets(&[("A", "line\nbreak")]), Format::Docker).is_err());
+    }
+
+    #[test]
+    fn base64_matches_rfc_4648_vectors() {
+        for (input, expected) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64(input.as_bytes()).as_str(), expected);
+        }
+        assert_eq!(base64(&[0xFB, 0xFF, 0xBF]).as_str(), "+/+/");
+    }
+
+    #[test]
+    fn kubernetes_secret_manifest() {
+        let manifest = render_kubernetes(
+            &secrets(&[("DB_URL", "postgres://x"), ("CERT", "line1\nline2")]),
+            "app-prod",
+            Some("payments"),
+        )
+        .unwrap();
+        assert_eq!(
+            text(&manifest),
+            "apiVersion: v1\nkind: Secret\nmetadata:\n  name: app-prod\n  namespace: payments\n\
+             type: Opaque\ndata:\n  CERT: bGluZTEKbGluZTI=\n  DB_URL: cG9zdGdyZXM6Ly94\n"
+        );
+        let empty = render_kubernetes(&Secrets::new(), "x", None).unwrap();
+        assert!(text(&empty).ends_with("data: {}\n"));
+        for name in ["", "Upper", "-lead", "trail-", "under_score", "a b"] {
+            assert!(
+                render_kubernetes(&Secrets::new(), name, None).is_err(),
+                "{name:?}"
+            );
+        }
+        assert!(render_kubernetes(&Secrets::new(), "ok", Some("Bad")).is_err());
     }
 
     #[test]

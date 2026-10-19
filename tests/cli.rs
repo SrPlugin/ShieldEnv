@@ -927,3 +927,29 @@ fn encrypted_identities_ask_for_their_passphrase() {
         .code(1)
         .stderr(contains("wrong password or tampered vault"));
 }
+
+#[test]
+fn export_targets_docker_and_kubernetes() {
+    let sandbox = Sandbox::with_secrets(&[("DB_URL", "postgres://x"), ("TOKEN", "a b")]);
+    assert_eq!(
+        sandbox.stdout(&["export", "-f", "docker"]),
+        "DB_URL=postgres://x\nTOKEN=a b\n"
+    );
+    let manifest = sandbox.stdout(&["-e", "dev", "export", "-f", "k8s", "--namespace", "web"]);
+    assert!(manifest.contains("kind: Secret"));
+    assert!(manifest.contains("  name: dev\n  namespace: web"));
+    assert!(manifest.contains("  DB_URL: cG9zdGdyZXM6Ly94"));
+    assert!(!manifest.contains("postgres://x"));
+    sandbox
+        .run(&["export", "-f", "k8s", "--name", "Bad_Name"])
+        .code(1);
+    sandbox
+        .run(&["export", "-f", "env", "--name", "x"])
+        .code(1)
+        .stderr(contains("only apply to the k8s format"));
+    sandbox.run(&["set", "MULTI", "a\nb"]).success();
+    sandbox
+        .run(&["export", "-f", "docker"])
+        .code(1)
+        .stderr(contains("line breaks"));
+}

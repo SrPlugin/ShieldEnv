@@ -6,7 +6,9 @@ use std::process::{self, ExitCode};
 
 use clap::CommandFactory;
 use clap_complete::Shell;
-use shieldenv::app::{Access, Charset, Format, Vault, parse_dotenv, random_secret, render, scan};
+use shieldenv::app::{
+    Access, Charset, Vault, parse_dotenv, random_secret, render, render_kubernetes, scan,
+};
 use shieldenv::crypto::{KEY_LEN, Key, shamir};
 use shieldenv::domain::{Environment, Pattern, SecretKey, unix_now};
 use shieldenv::storage::file::{WriteMode, create_private_dir, read_bounded, write_atomic};
@@ -14,7 +16,7 @@ use shieldenv::storage::{AuditLog, History, Scope, Workspace};
 use shieldenv::{Error, Result};
 use zeroize::Zeroizing;
 
-use super::args::{Cli, Command, MemberCommand, SharesCommand};
+use super::args::{Cli, Command, ExportFormat, MemberCommand, SharesCommand};
 use super::context::Context;
 use super::identity::manage_identity;
 use super::output::{format_date, notice, plural, write_stdout};
@@ -125,8 +127,16 @@ impl Context {
                 format,
                 output,
                 force,
+                name,
+                namespace,
             } => self.audited("export", &[], || {
-                self.export(format.into(), output.as_deref(), force)
+                self.export(
+                    format,
+                    output.as_deref(),
+                    force,
+                    name.as_deref(),
+                    namespace.as_deref(),
+                )
             }),
             Command::Run { only, command } => {
                 let prepared = self.audited("run", &[], || self.prepare_run(&only, command))?;
@@ -315,9 +325,26 @@ impl Context {
         Ok(ExitCode::SUCCESS)
     }
 
-    fn export(&self, format: Format, output: Option<&Path>, force: bool) -> Result<ExitCode> {
+    fn export(
+        &self,
+        format: ExportFormat,
+        output: Option<&Path>,
+        force: bool,
+        name: Option<&str>,
+        namespace: Option<&str>,
+    ) -> Result<ExitCode> {
+        if format != ExportFormat::K8s && (name.is_some() || namespace.is_some()) {
+            return Err(Error::InvalidValue(
+                "--name and --namespace only apply to the k8s format",
+            ));
+        }
         let vault = self.open(&self.environment, Access::Read)?;
-        let rendered = render(vault.secrets(), format)?;
+        let rendered = if let Some(plain) = format.plain_format() {
+            render(vault.secrets(), plain)?
+        } else {
+            let default_name = self.environment.as_str().replace('_', "-");
+            render_kubernetes(vault.secrets(), name.unwrap_or(&default_name), namespace)?
+        };
         match output {
             Some(path) => {
                 let mode = if force {

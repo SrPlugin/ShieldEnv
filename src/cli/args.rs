@@ -105,6 +105,10 @@ pub enum Command {
         output: Option<PathBuf>,
         #[arg(long, requires = "output", help = "Overwrite an existing file")]
         force: bool,
+        #[arg(long, value_name = "NAME", help = "Secret name for the k8s format")]
+        name: Option<String>,
+        #[arg(long, value_name = "NAMESPACE", help = "Namespace for the k8s format")]
+        namespace: Option<String>,
     },
 
     #[command(about = "Run a command with secrets injected into its environment")]
@@ -288,13 +292,18 @@ impl From<GenCharset> for Charset {
 pub enum ExportFormat {
     Env,
     Json,
+    Docker,
+    K8s,
 }
 
-impl From<ExportFormat> for Format {
-    fn from(format: ExportFormat) -> Self {
-        match format {
-            ExportFormat::Env => Self::Env,
-            ExportFormat::Json => Self::Json,
+impl ExportFormat {
+    #[must_use]
+    pub fn plain_format(self) -> Option<Format> {
+        match self {
+            Self::Env => Some(Format::Env),
+            Self::Json => Some(Format::Json),
+            Self::Docker => Some(Format::Docker),
+            Self::K8s => None,
         }
     }
 }
