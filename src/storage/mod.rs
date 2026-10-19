@@ -2,6 +2,8 @@ pub mod audit;
 pub mod codec;
 pub mod file;
 pub mod history;
+#[cfg(feature = "keyring")]
+pub mod keyring;
 pub mod keystore;
 pub mod secretfile;
 pub mod workspace;

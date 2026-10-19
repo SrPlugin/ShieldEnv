@@ -11,9 +11,11 @@ use super::prompt::Prompter;
 
 pub(super) fn manage_identity(action: IdCommand) -> Result<ExitCode> {
     match action {
+        IdCommand::New { keyring: true, .. } => store_in_keyring()?,
         IdCommand::New {
             file,
             no_passphrase,
+            keyring: false,
         } => {
             let path = file
                 .or_else(keystore::default_path)
@@ -47,4 +49,30 @@ pub(super) fn manage_identity(action: IdCommand) -> Result<ExitCode> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(feature = "keyring")]
+fn store_in_keyring() -> Result<()> {
+    use shieldenv::storage::keyring;
+
+    if keyring::load()?.is_some() {
+        return Err(Error::AlreadyExists(std::path::PathBuf::from(
+            "system keyring",
+        )));
+    }
+    let identity = Identity::generate()?;
+    keyring::save(&identity.secret_text())?;
+    let public = identity.public();
+    notice(format!(
+        "identity saved in the system keyring (fingerprint {}); give the line below to an administrator",
+        public.fingerprint()
+    ));
+    write_stdout(format!("{public}\n").as_bytes())
+}
+
+#[cfg(not(feature = "keyring"))]
+fn store_in_keyring() -> Result<()> {
+    Err(Error::Keyring(
+        "this build has no keyring support".to_owned(),
+    ))
 }

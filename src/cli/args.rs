@@ -258,6 +258,12 @@ pub enum IdCommand {
             help = "Store the identity unencrypted, for CI systems that keep it as a secret"
         )]
         no_passphrase: bool,
+        #[arg(
+            long,
+            conflicts_with_all = ["file", "no_passphrase"],
+            help = "Keep the identity in the system keyring instead of a file"
+        )]
+        keyring: bool,
     },
 
     #[command(about = "Print the public part of your identity")]

@@ -64,7 +64,8 @@ impl Sandbox {
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("SHIELDENV_IDENTITY")
             .env_remove("SHIELDENV_IDENTITY_FILE")
-            .env_remove("SHIELDENV_IDENTITY_PASSPHRASE");
+            .env_remove("SHIELDENV_IDENTITY_PASSPHRASE")
+            .env("SHIELDENV_NO_KEYRING", "1");
         command
     }
 

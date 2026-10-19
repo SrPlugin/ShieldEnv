@@ -10,11 +10,13 @@ use crate::{Error, Result};
 
 pub const IDENTITY_VARIABLE: &str = "SHIELDENV_IDENTITY";
 pub const IDENTITY_FILE_VARIABLE: &str = "SHIELDENV_IDENTITY_FILE";
+pub const NO_KEYRING_VARIABLE: &str = "SHIELDENV_NO_KEYRING";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Origin {
     Environment,
     File(PathBuf),
+    Keyring,
 }
 
 #[derive(Debug, Default)]
@@ -22,6 +24,7 @@ pub struct Sources {
     pub inline: Option<SecretString>,
     pub file: Option<PathBuf>,
     pub default_file: Option<PathBuf>,
+    pub keyring: bool,
 }
 
 impl Sources {
@@ -32,6 +35,7 @@ impl Sources {
             inline: variable(IDENTITY_VARIABLE).map(SecretString::from),
             file: variable(IDENTITY_FILE_VARIABLE).map(PathBuf::from),
             default_file: default_path(),
+            keyring: cfg!(feature = "keyring") && variable(NO_KEYRING_VARIABLE).is_none(),
         }
     }
 }
@@ -96,10 +100,33 @@ pub fn locate(sources: &Sources) -> Result<Option<Located>> {
     if let Some(path) = &sources.file {
         return load(path, true);
     }
-    match &sources.default_file {
-        Some(path) => load(path, false),
-        None => Ok(None),
+    let stored = match &sources.default_file {
+        Some(path) => load(path, false)?,
+        None => None,
+    };
+    if stored.is_some() || !sources.keyring {
+        return Ok(stored);
     }
+    from_keyring()
+}
+
+#[cfg(feature = "keyring")]
+fn from_keyring() -> Result<Option<Located>> {
+    let Ok(Some(text)) = super::keyring::load() else {
+        return Ok(None);
+    };
+    let identity = Identity::from_secret_text(&text)?;
+    Ok(Some(Located {
+        origin: Origin::Keyring,
+        public: identity.public(),
+        material: Material::Ready(Box::new(identity)),
+    }))
+}
+
+#[cfg(not(feature = "keyring"))]
+#[allow(clippy::unnecessary_wraps)]
+fn from_keyring() -> Result<Option<Located>> {
+    Ok(None)
 }
 
 pub fn create(path: &Path, contents: &[u8]) -> Result<()> {
@@ -160,6 +187,32 @@ mod tests {
         path
     }
 
+    #[cfg(feature = "keyring")]
+    #[test]
+    fn the_keyring_is_the_last_resort() {
+        crate::storage::keyring::use_mock_store();
+        let stored = Identity::generate().unwrap();
+        crate::storage::keyring::save(&stored.secret_text()).unwrap();
+        let only_keyring = Sources {
+            keyring: true,
+            ..Sources::default()
+        };
+        let located = locate(&only_keyring).unwrap().unwrap();
+        assert_eq!(located.origin(), &Origin::Keyring);
+        assert_eq!(located.public(), &stored.public());
+        let directory = tempfile::tempdir().unwrap();
+        let on_disk = Identity::generate().unwrap();
+        let both = Sources {
+            default_file: Some(plain_file(directory.path(), "identity", &on_disk)),
+            keyring: true,
+            ..Sources::default()
+        };
+        let located = locate(&both).unwrap().unwrap();
+        assert!(matches!(located.origin(), Origin::File(_)));
+        assert_eq!(located.public(), &on_disk.public());
+        assert!(locate(&Sources::default()).unwrap().is_none());
+    }
+
     #[test]
     fn nothing_found_when_no_source_exists() {
         let directory = tempfile::tempdir().unwrap();
@@ -179,7 +232,7 @@ mod tests {
         let sources = Sources {
             inline: Some(SecretString::from(inline.secret_text().to_string())),
             file: Some(plain_file(directory.path(), "other", &on_disk)),
-            default_file: None,
+            ..Sources::default()
         };
         let located = locate(&sources).unwrap().unwrap();
         assert_eq!(located.origin(), &Origin::Environment);
@@ -196,9 +249,9 @@ mod tests {
         let explicit_path = plain_file(directory.path(), "explicit", &explicit);
         let default_path = plain_file(directory.path(), "default", &default);
         let sources = Sources {
-            inline: None,
             file: Some(explicit_path.clone()),
             default_file: Some(default_path),
+            ..Sources::default()
         };
         let located = locate(&sources).unwrap().unwrap();
         assert_eq!(located.origin(), &Origin::File(explicit_path));

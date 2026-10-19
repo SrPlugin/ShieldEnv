@@ -81,6 +81,8 @@ pub enum Error {
     Spawn { program: String, source: io::Error },
     #[error(transparent)]
     Terminal(io::Error),
+    #[error("system keyring: {0}")]
+    Keyring(String),
     #[error("operating system random number generator failed")]
     Random,
 }
