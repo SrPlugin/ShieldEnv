@@ -1236,3 +1236,24 @@ fn run_withholds_variables_that_change_how_code_is_loaded() {
         .success()
         .stdout(contains("--require evil"));
 }
+
+#[test]
+fn only_administrators_can_rekey_a_vault_with_members() {
+    let team = team();
+    team.sandbox
+        .as_member(&team.bob)
+        .arg("rekey")
+        .assert()
+        .code(1)
+        .stderr(contains("only administrators"));
+    team.sandbox.run(&["rekey"]).code(1).stderr(
+        contains("no identity")
+            .or(contains("not a member"))
+            .or(contains("only administrators")),
+    );
+    team.sandbox
+        .as_member(&team.bob)
+        .args(["get", "API_KEY"])
+        .assert()
+        .success();
+}

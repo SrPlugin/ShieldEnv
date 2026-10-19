@@ -149,8 +149,18 @@ impl Vault {
         &self.environment
     }
 
-    pub fn rekey(&mut self, password: Option<&SecretString>) -> Result<bool> {
+    pub fn rekey(
+        &mut self,
+        password: Option<&SecretString>,
+        signer: Option<&Identity>,
+    ) -> Result<bool> {
         self.require_write()?;
+        if !self.envelope.members().is_empty() {
+            let administrator = signer.is_some_and(|identity| self.envelope.is_admin(identity));
+            if !administrator {
+                return Err(Error::NotAdmin);
+            }
+        }
         let dropped_password = self.envelope.rekey(password)?;
         self.save()?;
         self.history.clear()?;
@@ -444,7 +454,9 @@ mod tests {
             .unwrap();
         vault.restore(1).unwrap();
         assert_eq!(vault.secrets().get("B"), Some("2"));
-        vault.rekey(Some(&password("another password!"))).unwrap();
+        vault
+            .rekey(Some(&password("another password!")), None)
+            .unwrap();
         assert!(vault.restore(1).is_err());
     }
 
@@ -464,6 +476,30 @@ mod tests {
     }
 
     #[test]
+    fn only_administrators_rekey_vaults_with_members() {
+        let fixture = fixture();
+        let secret = password("correct horse battery");
+        let admin = Identity::generate().unwrap();
+        let member = Identity::generate().unwrap();
+        let mut vault = Vault::create(&fixture.workspace, &fixture.environment, &secret).unwrap();
+        vault.init_admin(&admin, "admin".parse().unwrap()).unwrap();
+        vault
+            .add_member(&admin, "member".parse().unwrap(), member.public(), false)
+            .unwrap();
+        assert!(matches!(
+            vault.rekey(Some(&secret), None),
+            Err(Error::NotAdmin)
+        ));
+        assert!(matches!(
+            vault.rekey(Some(&secret), Some(&member)),
+            Err(Error::NotAdmin)
+        ));
+        assert_eq!(vault.generation(), 0);
+        vault.rekey(Some(&secret), Some(&admin)).unwrap();
+        assert_eq!(vault.generation(), 1);
+    }
+
+    #[test]
     fn rekey_invalidates_the_previous_data_key() {
         let fixture = fixture();
         let secret = password("correct horse battery");
@@ -471,7 +507,7 @@ mod tests {
         insert(&mut vault, "A", "1");
         vault.save().unwrap();
         let old_key = vault.data_key().clone();
-        vault.rekey(Some(&secret)).unwrap();
+        vault.rekey(Some(&secret), None).unwrap();
         assert_eq!(vault.generation(), 1);
         drop(vault);
         assert!(matches!(

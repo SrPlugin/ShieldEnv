@@ -517,7 +517,13 @@ impl Context {
 
     fn rekey(&self) -> Result<ExitCode> {
         let (mut vault, credentials) = self.unlock(&self.environment, Access::Write)?;
-        let dropped_password = vault.rekey(credentials.password.as_ref())?;
+        let password = credentials.password.clone();
+        let signer = if vault.members().is_empty() {
+            None
+        } else {
+            Some(self.identity_for(credentials)?)
+        };
+        let dropped_password = vault.rekey(password.as_ref(), signer.as_ref())?;
         notice(format!(
             "rotated the data key of '{}'; earlier recovery shares no longer work, \
              and secrets seen by former members should be changed",
