@@ -41,6 +41,13 @@ impl FileLock {
 }
 
 pub fn read_bounded(path: &Path, limit: usize) -> Result<Option<Zeroizing<Vec<u8>>>> {
+    read_with_metadata(path, limit).map(|found| found.map(|(bytes, _)| bytes))
+}
+
+pub fn read_with_metadata(
+    path: &Path,
+    limit: usize,
+) -> Result<Option<(Zeroizing<Vec<u8>>, fs::Metadata)>> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
@@ -60,7 +67,7 @@ pub fn read_bounded(path: &Path, limit: usize) -> Result<Option<Zeroizing<Vec<u8
     if bytes.len() > limit {
         return Err(Error::LimitExceeded("file too large"));
     }
-    Ok(Some(bytes))
+    Ok(Some((bytes, metadata)))
 }
 
 pub fn write_atomic(path: &Path, contents: &[u8], mode: WriteMode) -> Result<()> {

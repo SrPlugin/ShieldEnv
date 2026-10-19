@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use secrecy::{ExposeSecret, SecretString};
 use zeroize::Zeroizing;
 
-use super::file::{WriteMode, create_private_dir, read_bounded, write_atomic};
+use super::file::{WriteMode, create_private_dir, read_with_metadata, write_atomic};
 use crate::crypto::identity_file::{self, MAX_FILE_LEN};
 use crate::crypto::{Identity, PublicIdentity};
 use crate::{Error, Result};
@@ -140,7 +140,7 @@ pub fn create(path: &Path, contents: &[u8]) -> Result<()> {
 }
 
 fn load(path: &Path, required: bool) -> Result<Option<Located>> {
-    let Some(bytes) = read_bounded(path, MAX_FILE_LEN)? else {
+    let Some((bytes, metadata)) = read_with_metadata(path, MAX_FILE_LEN)? else {
         return if required {
             Err(Error::Io {
                 path: path.to_path_buf(),
@@ -150,7 +150,7 @@ fn load(path: &Path, required: bool) -> Result<Option<Located>> {
             Ok(None)
         };
     };
-    if !identity_file::is_encrypted(&bytes) && !is_private(path) {
+    if !identity_file::is_encrypted(&bytes) && !is_private(&metadata) {
         return Err(Error::InsecurePermissions(path.to_path_buf()));
     }
     Ok(Some(Located {
@@ -161,14 +161,14 @@ fn load(path: &Path, required: bool) -> Result<Option<Located>> {
 }
 
 #[cfg(unix)]
-fn is_private(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    path.metadata()
-        .is_ok_and(|metadata| metadata.permissions().mode().trailing_zeros() >= 6)
+fn is_private(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    metadata.permissions().mode().trailing_zeros() >= 6
+        && metadata.uid() == rustix::process::geteuid().as_raw()
 }
 
 #[cfg(not(unix))]
-fn is_private(_path: &Path) -> bool {
+fn is_private(_metadata: &std::fs::Metadata) -> bool {
     true
 }
 
