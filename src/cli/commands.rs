@@ -14,11 +14,11 @@ use shieldenv::storage::{AuditLog, History, Scope, Workspace};
 use shieldenv::{Error, Result};
 use zeroize::Zeroizing;
 
-use super::args::{Cli, Command, SharesCommand};
+use super::args::{Cli, Command, MemberCommand, SharesCommand};
 use super::context::Context;
 use super::identity::manage_identity;
 use super::output::{format_date, notice, plural, write_stdout};
-use super::prompt::{self, NEW_PASSWORD_VARIABLE, PASSWORD_VARIABLE, Prompter};
+use super::prompt::{self, NEW_PASSWORD_VARIABLE, PASSWORD_VARIABLE};
 
 const IMPORT_LIMIT: usize = 16 << 20;
 const SHARE_LIMIT: usize = 8 * 1024;
@@ -43,12 +43,8 @@ pub fn execute(cli: Cli) -> Result<ExitCode> {
         Command::Completions { shell } => completions(shell),
         Command::Scan { path } => scan_for_secrets(&path),
         Command::Id { action } => manage_identity(action),
-        command => Context {
-            workspace: Workspace::locate(scope, &working_directory)?,
-            environment,
-            prompter: Prompter::from_environment(),
-        }
-        .dispatch(command),
+        command => Context::new(Workspace::locate(scope, &working_directory)?, environment)
+            .dispatch(command),
     }
 }
 
@@ -162,6 +158,22 @@ impl Context {
                 SharesCommand::Recover { files } => {
                     self.audited("shares-recover", &[], || self.recover(&files))
                 }
+            },
+            Command::Member { action } => match action {
+                MemberCommand::Init { name } => {
+                    self.audited("member-init", &[name.as_str()], || self.member_init(&name))
+                }
+                MemberCommand::Add {
+                    name,
+                    public,
+                    admin,
+                } => self.audited("member-add", &[name.as_str()], || {
+                    self.member_add(&name, *public, admin)
+                }),
+                MemberCommand::Rm { name } => {
+                    self.audited("member-rm", &[name.as_str()], || self.member_remove(&name))
+                }
+                MemberCommand::Ls => self.member_list(),
             },
             Command::Log { count } => self.log(count),
             Command::Init
@@ -345,8 +357,8 @@ impl Context {
     }
 
     fn diff(&self, left: &Environment, right: &Environment) -> Result<ExitCode> {
-        let (left_vault, password) = self.unlock(left, Access::Read)?;
-        let right_vault = self.open_reusing(right, Access::Read, &password)?;
+        let (left_vault, credentials) = self.unlock(left, Access::Read)?;
+        let right_vault = self.open_reusing(right, Access::Read, &credentials)?;
         let mut output = String::new();
         for key in left_vault.secrets().keys() {
             if !right_vault.secrets().contains(key.as_str()) {
@@ -376,12 +388,17 @@ impl Context {
     }
 
     fn copy_secrets(&self, from: &Environment, to: &Environment, force: bool) -> Result<ExitCode> {
-        let (source, password) = self.unlock(from, Access::Read)?;
+        let (source, credentials) = self.unlock(from, Access::Read)?;
         let mut target = if Vault::exists(&self.workspace, to) {
-            self.open_reusing(to, Access::Write, &password)?
+            self.open_reusing(to, Access::Write, &credentials)?
         } else {
             notice(format!("creating vault for '{to}'"));
-            source.create_sibling(&self.workspace, to, Some(&password), None)?
+            source.create_sibling(
+                &self.workspace,
+                to,
+                credentials.password.as_ref(),
+                credentials.identity.as_ref(),
+            )?
         };
         let (mut copied, mut skipped) = (0, 0);
         for (key, value) in source.secrets().iter() {
@@ -411,13 +428,19 @@ impl Context {
     }
 
     fn rekey(&self) -> Result<ExitCode> {
-        let (mut vault, password) = self.unlock(&self.environment, Access::Write)?;
-        vault.rekey(Some(&password))?;
+        let (mut vault, credentials) = self.unlock(&self.environment, Access::Write)?;
+        let dropped_password = vault.rekey(credentials.password.as_ref())?;
         notice(format!(
             "rotated the data key of '{}'; earlier recovery shares no longer work, \
              and secrets seen by former members should be changed",
             self.environment
         ));
+        if dropped_password {
+            notice(
+                "password access was removed because the vault was not opened with it; \
+                 set one again with 'shieldenv passwd'",
+            );
+        }
         Ok(ExitCode::SUCCESS)
     }
 
@@ -471,8 +494,21 @@ impl Context {
                 )
             },
         );
+        let members = vault.members();
+        let administrators = members.iter().filter(|member| member.admin).count();
+        let access = match (vault.has_password(), members.len()) {
+            (true, 0) => "password".to_owned(),
+            (true, count) => format!(
+                "password and {} ({administrators} administrators)",
+                plural(count, "member")
+            ),
+            (false, count) => format!(
+                "{} ({administrators} administrators)",
+                plural(count, "member")
+            ),
+        };
         let report = format!(
-            "vault        {}\nscope        {}\nenvironment  {}\nkeys         {}\nsize         {} bytes\nmodified     {modified}\ngeneration   {}\nkdf          {kdf}\ncipher       xchacha20-poly1305\n",
+            "vault        {}\nscope        {}\nenvironment  {}\nkeys         {}\nsize         {} bytes\nmodified     {modified}\ngeneration   {}\naccess       {access}\nkdf          {kdf}\ncipher       xchacha20-poly1305\n",
             vault.path().display(),
             self.workspace.scope(),
             vault.environment(),
@@ -573,11 +609,12 @@ impl Context {
         for entry in &entries {
             let _ = writeln!(
                 output,
-                "{}  {:<14} {:<12} {:<6} {}",
+                "{}  {:<14} {:<12} {:<6} {:<10} {}",
                 entry.timestamp,
                 entry.action,
                 entry.environment,
                 if entry.ok { "ok" } else { "failed" },
+                entry.actor.as_deref().unwrap_or("-"),
                 entry.keys.join(" ")
             );
         }

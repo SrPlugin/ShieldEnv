@@ -35,7 +35,7 @@ pub enum Error {
     RemoveSelf,
     #[error("this vault cannot be opened with a password; use an identity that is a member")]
     NoPasswordAccess,
-    #[error("an identity or a password is needed to create a vault")]
+    #[error("cannot create a vault without the source password or an administrator identity")]
     NoAccess,
     #[error("invalid identity: {0}")]
     InvalidIdentity(&'static str),

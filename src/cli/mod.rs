@@ -3,6 +3,7 @@ pub mod commands;
 mod context;
 pub mod hardening;
 mod identity;
+mod members;
 mod output;
 pub mod prompt;
 

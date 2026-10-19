@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use shieldenv::app::{Charset, Format};
-use shieldenv::domain::{Environment, Pattern, SecretKey};
+use shieldenv::crypto::PublicIdentity;
+use shieldenv::domain::{Environment, MemberName, Pattern, SecretKey};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -181,6 +182,12 @@ pub enum Command {
         path: PathBuf,
     },
 
+    #[command(about = "Control who can open a vault")]
+    Member {
+        #[command(subcommand)]
+        action: MemberCommand,
+    },
+
     #[command(about = "Manage your personal identity")]
     Id {
         #[command(subcommand)]
@@ -189,6 +196,30 @@ pub enum Command {
 
     #[command(about = "Print a shell completion script")]
     Completions { shell: Shell },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MemberCommand {
+    #[command(about = "Make your identity the first administrator of this vault")]
+    Init { name: MemberName },
+
+    #[command(about = "Give a person or a CI system access to this vault")]
+    Add {
+        name: MemberName,
+        #[arg(
+            value_parser = parse_public_identity,
+            help = "Public identity printed by 'shieldenv id new'"
+        )]
+        public: Box<PublicIdentity>,
+        #[arg(long, help = "Allow this member to manage other members")]
+        admin: bool,
+    },
+
+    #[command(about = "Revoke access and rotate the data key")]
+    Rm { name: MemberName },
+
+    #[command(about = "List the members of this vault")]
+    Ls,
 }
 
 #[derive(Debug, Subcommand)]
@@ -230,6 +261,10 @@ pub enum SharesCommand {
         #[arg(required = true, num_args = 2.., value_name = "FILE")]
         files: Vec<PathBuf>,
     },
+}
+
+fn parse_public_identity(text: &str) -> shieldenv::Result<Box<PublicIdentity>> {
+    text.parse().map(Box::new)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

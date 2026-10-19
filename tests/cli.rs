@@ -68,6 +68,32 @@ impl Sandbox {
         command
     }
 
+    fn identity(&self, name: &str) -> (PathBuf, String) {
+        let path = self.root.path().join(format!("{name}.key"));
+        let created = self
+            .command()
+            .args(["id", "new", "--no-passphrase", "--file"])
+            .arg(&path)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        (path, String::from_utf8(created).unwrap().trim().to_owned())
+    }
+
+    fn with_identity(&self, key_file: &Path) -> Command {
+        let mut command = self.command();
+        command.env("SHIELDENV_IDENTITY_FILE", key_file);
+        command
+    }
+
+    fn as_member(&self, key_file: &Path) -> Command {
+        let mut command = self.with_identity(key_file);
+        command.env_remove("SHIELDENV_PASSWORD");
+        command
+    }
+
     fn run(&self, arguments: &[&str]) -> assert_cmd::assert::Assert {
         self.command().args(arguments).assert()
     }
@@ -670,4 +696,234 @@ fn id_show_without_an_identity_explains_what_to_do() {
         .run(&["id", "show"])
         .code(1)
         .stderr(contains("shieldenv id new"));
+}
+
+struct Team {
+    sandbox: Sandbox,
+    alice: PathBuf,
+    bob: PathBuf,
+    bob_public: String,
+}
+
+fn team() -> Team {
+    let sandbox = Sandbox::with_secrets(&[("API_KEY", "abc")]);
+    let (alice, _) = sandbox.identity("alice");
+    let (bob, bob_public) = sandbox.identity("bob");
+    sandbox
+        .with_identity(&alice)
+        .args(["member", "init", "alice"])
+        .assert()
+        .success()
+        .stderr(contains("administrator"));
+    sandbox
+        .with_identity(&alice)
+        .args(["member", "add", "bob", &bob_public])
+        .assert()
+        .success();
+    Team {
+        sandbox,
+        alice,
+        bob,
+        bob_public,
+    }
+}
+
+#[test]
+fn members_open_the_vault_with_their_identity_and_no_password() {
+    let team = team();
+    team.sandbox
+        .as_member(&team.bob)
+        .args(["get", "API_KEY"])
+        .assert()
+        .success()
+        .stdout("abc\n");
+    team.sandbox
+        .as_member(&team.bob)
+        .args(["set", "NEW_KEY", "written-by-bob"])
+        .assert()
+        .success();
+    assert_eq!(team.sandbox.stdout(&["get", "NEW_KEY"]), "written-by-bob\n");
+    let members = team.sandbox.stdout(&["member", "ls"]);
+    assert!(members.contains("alice\tadmin\t"));
+    assert!(members.contains("bob\tmember\t"));
+}
+
+#[test]
+fn only_administrators_manage_members() {
+    let team = team();
+    let (_, carol_public) = team.sandbox.identity("carol");
+    team.sandbox
+        .as_member(&team.bob)
+        .args(["member", "add", "carol", &carol_public])
+        .assert()
+        .code(1)
+        .stderr(contains("only administrators"));
+    team.sandbox
+        .as_member(&team.bob)
+        .args(["member", "rm", "alice"])
+        .assert()
+        .code(1)
+        .stderr(contains("only administrators"));
+    let (stranger, _) = team.sandbox.identity("stranger");
+    team.sandbox
+        .with_identity(&stranger)
+        .args(["member", "add", "carol", &carol_public])
+        .assert()
+        .code(1)
+        .stderr(contains("not a member"));
+    team.sandbox
+        .with_identity(&team.alice)
+        .args(["member", "add", "bob", &team.bob_public])
+        .assert()
+        .code(1)
+        .stderr(contains("already exists"));
+    team.sandbox
+        .with_identity(&team.alice)
+        .args(["member", "init", "alice-again"])
+        .assert()
+        .code(1)
+        .stderr(contains("already has members"));
+}
+
+#[test]
+fn invalid_public_identities_are_usage_errors() {
+    let team = team();
+    team.sandbox
+        .with_identity(&team.alice)
+        .args(["member", "add", "carol", "not-an-identity"])
+        .assert()
+        .code(2);
+    team.sandbox
+        .with_identity(&team.alice)
+        .args(["member", "add", "bad name", &team.bob_public])
+        .assert()
+        .code(2);
+}
+
+#[test]
+fn removing_a_member_revokes_access_and_password() {
+    let team = team();
+    team.sandbox
+        .with_identity(&team.alice)
+        .args(["member", "rm", "bob"])
+        .assert()
+        .success()
+        .stderr(contains("password access was removed too"));
+    team.sandbox
+        .as_member(&team.bob)
+        .args(["get", "API_KEY"])
+        .assert()
+        .code(1)
+        .stderr(contains("not a member"))
+        .stdout("");
+    team.sandbox
+        .run(&["get", "API_KEY"])
+        .code(1)
+        .stderr(contains("cannot be opened with a password"));
+    team.sandbox
+        .as_member(&team.alice)
+        .args(["get", "API_KEY"])
+        .assert()
+        .success()
+        .stdout("abc\n");
+    team.sandbox
+        .as_member(&team.alice)
+        .args(["member", "rm", "alice"])
+        .assert()
+        .code(1)
+        .stderr(contains("cannot remove themselves"));
+}
+
+#[test]
+fn rekey_keeps_member_access() {
+    let team = team();
+    team.sandbox
+        .as_member(&team.alice)
+        .arg("rekey")
+        .assert()
+        .success()
+        .stderr(contains("password access was removed"));
+    team.sandbox
+        .as_member(&team.bob)
+        .args(["get", "API_KEY"])
+        .assert()
+        .success()
+        .stdout("abc\n");
+    team.sandbox
+        .as_member(&team.bob)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(contains("generation   1"));
+}
+
+#[test]
+fn administrators_copy_member_lists_to_new_environments() {
+    let team = team();
+    team.sandbox
+        .as_member(&team.alice)
+        .args(["cp", "--from", "dev", "--to", "staging"])
+        .assert()
+        .success();
+    team.sandbox
+        .as_member(&team.bob)
+        .args(["-e", "staging", "get", "API_KEY"])
+        .assert()
+        .success()
+        .stdout("abc\n");
+    team.sandbox
+        .as_member(&team.bob)
+        .args(["cp", "--from", "dev", "--to", "qa"])
+        .assert()
+        .code(1)
+        .stderr(contains("cannot create a vault"));
+}
+
+#[test]
+fn the_audit_log_names_the_actor() {
+    let team = team();
+    team.sandbox
+        .as_member(&team.bob)
+        .args(["get", "API_KEY"])
+        .assert()
+        .success();
+    let log = team.sandbox.stdout(&["log", "-n", "1"]);
+    assert!(log.contains("get"), "{log}");
+    assert!(log.contains("bob"), "{log}");
+    assert!(!log.contains("abc"));
+    let by_password = team.sandbox.stdout(&["log", "-n", "50"]);
+    assert!(by_password.contains("password"));
+}
+
+#[test]
+fn encrypted_identities_ask_for_their_passphrase() {
+    let sandbox = Sandbox::with_secrets(&[("API_KEY", "abc")]);
+    sandbox
+        .command()
+        .env("SHIELDENV_IDENTITY_PASSPHRASE", "identity passphrase")
+        .args(["id", "new"])
+        .assert()
+        .success();
+    sandbox
+        .command()
+        .env("SHIELDENV_IDENTITY_PASSPHRASE", "identity passphrase")
+        .args(["member", "init", "ana"])
+        .assert()
+        .success();
+    sandbox
+        .command()
+        .env_remove("SHIELDENV_PASSWORD")
+        .env("SHIELDENV_IDENTITY_PASSPHRASE", "identity passphrase")
+        .args(["get", "API_KEY"])
+        .assert()
+        .success()
+        .stdout("abc\n");
+    sandbox
+        .command()
+        .env_remove("SHIELDENV_PASSWORD")
+        .env("SHIELDENV_IDENTITY_PASSPHRASE", "not the passphrase!")
+        .args(["get", "API_KEY"])
+        .assert()
+        .code(1)
+        .stderr(contains("wrong password or tampered vault"));
 }

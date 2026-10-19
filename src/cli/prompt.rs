@@ -56,6 +56,22 @@ impl Prompter {
         }
     }
 
+    pub fn identity_passphrase(&self) -> Result<SecretString> {
+        match &self.identity_passphrase {
+            Some(passphrase) => Ok(passphrase.clone()),
+            None => ask("Passphrase for your identity: "),
+        }
+    }
+
+    #[must_use]
+    pub fn identity_attempts(&self) -> usize {
+        if self.identity_passphrase.is_some() {
+            1
+        } else {
+            INTERACTIVE_ATTEMPTS
+        }
+    }
+
     pub fn new_identity_passphrase(&self) -> Result<SecretString> {
         match &self.identity_passphrase {
             Some(passphrase) => validated(passphrase.clone()),

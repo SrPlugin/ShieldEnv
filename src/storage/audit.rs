@@ -18,6 +18,7 @@ pub struct AuditEntry {
     pub environment: String,
     pub keys: Vec<String>,
     pub ok: bool,
+    pub actor: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +38,7 @@ impl AuditLog {
         environment: &Environment,
         keys: &[&str],
         ok: bool,
+        actor: Option<&str>,
     ) -> Result<()> {
         let timestamp = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
         let mut line = json!({
@@ -45,6 +47,7 @@ impl AuditLog {
             "env": environment.as_str(),
             "keys": keys,
             "ok": ok,
+            "by": actor,
         })
         .to_string();
         line.push('\n');
@@ -98,6 +101,7 @@ fn parse_entry(line: &str) -> Option<AuditEntry> {
             .map(printable)
             .collect(),
         ok: value.get("ok")?.as_bool()?,
+        actor: value.get("by").and_then(Value::as_str).map(printable),
     })
 }
 
@@ -128,8 +132,9 @@ mod tests {
     fn records_are_returned_newest_first() {
         let (_directory, log) = log();
         let dev: Environment = "dev".parse().unwrap();
-        log.record("set", &dev, &["API_KEY"], true).unwrap();
-        log.record("get", &dev, &[], false).unwrap();
+        log.record("set", &dev, &["API_KEY"], true, Some("ana"))
+            .unwrap();
+        log.record("get", &dev, &[], false, None).unwrap();
         let entries = log.recent(10).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].action, "get");
@@ -137,6 +142,8 @@ mod tests {
         assert_eq!(entries[1].action, "set");
         assert_eq!(entries[1].keys, ["API_KEY"]);
         assert_eq!(entries[1].environment, "dev");
+        assert_eq!(entries[1].actor.as_deref(), Some("ana"));
+        assert_eq!(entries[0].actor, None);
         assert!(entries[1].timestamp.ends_with('Z'));
         assert_eq!(log.recent(1).unwrap().len(), 1);
     }
@@ -160,7 +167,7 @@ mod tests {
         let (directory, log) = log();
         let filler = "x".repeat(usize::try_from(TAIL_BYTES).unwrap());
         fs::write(directory.path().join("audit.log"), format!("{filler}\n")).unwrap();
-        log.record("rm", &"dev".parse().unwrap(), &["OLD"], true)
+        log.record("rm", &"dev".parse().unwrap(), &["OLD"], true, None)
             .unwrap();
         let entries = log.recent(10).unwrap();
         assert_eq!(entries.len(), 1);
