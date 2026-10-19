@@ -54,6 +54,13 @@ pub fn merge_vaults(
         unlock,
         &[our_envelope.data_key(), their_envelope.data_key()],
     )?;
+    let same_vault = our_envelope.vault_id() == their_envelope.vault_id()
+        && our_envelope.vault_id() == base_envelope.vault_id();
+    if !same_vault {
+        return Err(Error::MergeConflict(
+            "the three files belong to different vaults".to_owned(),
+        ));
+    }
     let merged = merge_secrets(&base_secrets, &our_secrets, &their_secrets)?;
     let (original, mine, other) = (
         base_envelope.access_summary(),
@@ -234,6 +241,34 @@ mod tests {
             pairs(&codec::decode(&plaintext).unwrap()),
             expected(&[("A", "1"), ("OURS", "o"), ("THEIRS", "t")])
         );
+    }
+
+    #[test]
+    fn a_foreign_vault_cannot_replace_the_envelope() {
+        let password = password();
+        let victim = Identity::generate().unwrap();
+        let attacker = Identity::generate().unwrap();
+        let mut genuine = Envelope::create(&password).unwrap();
+        genuine
+            .init_admin(&victim, "victim".parse().unwrap())
+            .unwrap();
+        let base = seal(&genuine, &secrets(&[("A", "1", 1)]));
+        let mut hostile = Envelope::create(&password).unwrap();
+        hostile
+            .init_admin(&attacker, "attacker".parse().unwrap())
+            .unwrap();
+        hostile
+            .add_member(&attacker, "victim".parse().unwrap(), victim.public(), false)
+            .unwrap();
+        let theirs = seal(&hostile, &secrets(&[("A", "1", 1)]));
+        assert!(matches!(
+            merge_vaults(&base, &base, &theirs, Unlock::from(&victim)),
+            Err(Error::MergeConflict(_))
+        ));
+        assert!(matches!(
+            merge_vaults(&theirs, &base, &base, Unlock::from(&victim)),
+            Err(Error::MergeConflict(_))
+        ));
     }
 
     #[test]
