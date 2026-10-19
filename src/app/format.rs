@@ -14,10 +14,20 @@ pub enum Format {
     Docker,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Dotenv {
     pub entries: Vec<(SecretKey, SecretValue)>,
     pub rejected_lines: Vec<usize>,
+}
+
+impl std::fmt::Debug for Dotenv {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Dotenv")
+            .field("entries", &self.entries.len())
+            .field("rejected_lines", &self.rejected_lines)
+            .finish()
+    }
 }
 
 pub fn render(secrets: &Secrets, format: Format) -> Result<Zeroizing<Vec<u8>>> {
@@ -283,6 +293,12 @@ mod tests {
 
     fn text(bytes: &[u8]) -> &str {
         std::str::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn debug_output_never_contains_values() {
+        let parsed = parse_dotenv("A=top-secret\n");
+        assert!(!format!("{parsed:?}").contains("top-secret"));
     }
 
     #[test]

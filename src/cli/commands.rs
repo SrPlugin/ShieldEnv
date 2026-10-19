@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::fmt::Write as _;
-use std::io;
+use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::{self, ExitCode};
 
@@ -23,7 +23,7 @@ use super::args::{
 use super::context::Context;
 use super::git;
 use super::identity::manage_identity;
-use super::output::{format_date, notice, plural, write_stdout};
+use super::output::{format_date, notice, plural, printable, write_stdout};
 use super::prompt::{self, CREDENTIAL_VARIABLES};
 
 const IMPORT_LIMIT: usize = 16 << 20;
@@ -79,7 +79,7 @@ fn scan_for_secrets(path: &Path) -> Result<ExitCode> {
         let _ = writeln!(
             output,
             "{}{location}: {}",
-            finding.path.display(),
+            printable(&finding.path.display().to_string()),
             finding.kind
         );
     }
@@ -225,7 +225,15 @@ impl Context {
 
     fn set(&self, key: &SecretKey, value: Option<String>) -> Result<ExitCode> {
         let value = match value {
-            Some(value) => Zeroizing::new(value),
+            Some(value) => {
+                if io::stdin().is_terminal() {
+                    notice(
+                        "warning: the value stays in your shell history and process list; \
+                         omit it to be asked for it instead",
+                    );
+                }
+                Zeroizing::new(value)
+            }
             None => prompt::value(key)?,
         };
         let mut vault = self.open_or_create(&self.environment)?;

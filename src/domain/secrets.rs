@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use zeroize::Zeroizing;
@@ -14,10 +15,18 @@ pub struct SecretMeta {
     pub updated: u64,
 }
 
-#[derive(Debug)]
 struct Entry {
     value: SecretValue,
     meta: SecretMeta,
+}
+
+impl fmt::Debug for Entry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Entry")
+            .field("meta", &self.meta)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -149,6 +158,17 @@ mod tests {
 
     fn value(text: &str) -> SecretValue {
         Zeroizing::new(text.to_owned())
+    }
+
+    #[test]
+    fn debug_output_never_contains_values() {
+        let mut secrets = Secrets::new();
+        secrets
+            .insert(key("API_KEY"), value("super-secret-value"))
+            .unwrap();
+        let rendered = format!("{secrets:?}");
+        assert!(rendered.contains("API_KEY"));
+        assert!(!rendered.contains("super-secret-value"));
     }
 
     #[test]

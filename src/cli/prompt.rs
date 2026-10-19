@@ -6,10 +6,11 @@ use shieldenv::{Error, Result};
 use zeroize::Zeroizing;
 
 pub const PASSWORD_VARIABLE: &str = "SHIELDENV_PASSWORD";
-pub const CREDENTIAL_VARIABLES: [&str; 4] = [
+pub const CREDENTIAL_VARIABLES: [&str; 5] = [
     PASSWORD_VARIABLE,
     NEW_PASSWORD_VARIABLE,
     shieldenv::storage::keystore::IDENTITY_VARIABLE,
+    shieldenv::storage::keystore::IDENTITY_FILE_VARIABLE,
     IDENTITY_PASSPHRASE_VARIABLE,
 ];
 pub const NEW_PASSWORD_VARIABLE: &str = "SHIELDENV_NEW_PASSWORD";

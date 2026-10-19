@@ -1257,3 +1257,14 @@ fn only_administrators_can_rekey_a_vault_with_members() {
         .assert()
         .success();
 }
+
+#[cfg(unix)]
+#[test]
+fn scan_does_not_forward_control_characters_from_file_names() {
+    let sandbox = Sandbox::new();
+    fs::write(sandbox.project().join(".env.\u{1b}[31mred"), "A=1").unwrap();
+    let output = sandbox.run(&["scan"]).code(1).get_output().stdout.clone();
+    let text = String::from_utf8(output).unwrap();
+    assert!(text.contains("environment file"));
+    assert!(!text.contains('\u{1b}'));
+}
